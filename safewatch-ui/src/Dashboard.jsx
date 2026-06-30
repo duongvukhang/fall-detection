@@ -9,17 +9,21 @@ const API    = import.meta.env.VITE_API_URL    || "https://YOUR_BACKEND_DOMAIN";
 const WS_URL = import.meta.env.VITE_WS_URL     || "wss://YOUR_BACKEND_DOMAIN";
 
 const PALETTE = {
-  bg:      "#0d1117",
-  surface: "#161b22",
-  border:  "#30363d",
-  text:    "#e6edf3",
-  muted:   "#8b949e",
-  accent:  "#e94560",
-  warn:    "#f5a623",
-  safe:    "#3fb950",
-  info:    "#58a6ff",
+  bg:      "#f8fafc", // Ultra-light slate background
+  surface: "#ffffff", // Crisp white cards
+  border:  "#e2e8f0", // Soft, subtle dividers
+  text:    "#0f172a", // Deep slate for high-contrast text
+  muted:   "#64748b", // Elegant muted slate gray
+  accent:  "#e11d48", // Rose-red for critical events
+  warn:    "#d97706", // Amber for alerts
+  safe:    "#10b981", // Emerald green for active monitoring
+  info:    "#2563eb", // Royal blue for interactive links
 };
-const DONUT_COLORS = ["#e94560", "#f5a623", "#8b949e"];
+const DONUT_COLORS = ["#e11d48", "#d97706", "#94a3b8"];
+
+const SHADOW = "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05)";
+const SHADOW_MD = "0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05)";
+const SHADOW_LG = "0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05)";
 
 // ─── Login ──────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
@@ -39,7 +43,6 @@ function LoginScreen({ onLogin }) {
       if (!res.ok) { setError("Invalid email or password."); setLoading(false); return; }
       const data = await res.json();
       localStorage.setItem("jwt", data.access_token);
-      // Decode user_id from JWT payload (base64 middle segment)
       const payload = JSON.parse(atob(data.access_token.split(".")[1]));
       localStorage.setItem("uid", payload.sub);
       onLogin();
@@ -50,24 +53,25 @@ function LoginScreen({ onLogin }) {
   }
 
   const inp = {
-    width: "100%", padding: "10px 14px", borderRadius: 8, fontSize: 14,
-    background: "#0d1117", border: `1px solid ${PALETTE.border}`,
+    width: "100%", padding: "12px 14px", borderRadius: 8, fontSize: 14,
+    background: PALETTE.surface, border: `1px solid ${PALETTE.border}`,
     color: PALETTE.text, outline: "none", boxSizing: "border-box",
+    transition: "border-color 0.2s",
   };
 
   return (
-    <div style={{ minHeight:"100vh", background:PALETTE.bg, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
-      <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:16, padding:"40px 36px", width:360 }}>
-        <div style={{ textAlign:"center", marginBottom:32 }}>
-          <div style={{ fontSize:36, marginBottom:8 }}>🛡️</div>
-          <div style={{ fontSize:22, fontWeight:700, color:PALETTE.text }}>SafeWatch</div>
-          <div style={{ fontSize:13, color:PALETTE.muted, marginTop:4 }}>Sign in to your dashboard</div>
+    <div style={{ minHeight:"100vh", background:PALETTE.bg, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',sans-serif" }}>
+      <div style={{ background:PALETTE.surface, borderRadius:16, padding:"48px 40px", width:380, boxShadow: SHADOW_LG, border: `1px solid ${PALETTE.border}` }}>
+        <div style={{ textAlign:"center", marginBottom:36 }}>
+          <div style={{ fontSize:32, marginBottom:12 }}></div>
+          <div style={{ fontSize:24, fontWeight:700, color:PALETTE.text, letterSpacing:"-0.03em" }}>The AI Guard</div>
+          <div style={{ fontSize:14, color:PALETTE.muted, marginTop:6 }}>Sign in to your dashboard</div>
         </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <input style={inp} type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
+        <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+          <input style={inp} type="email" placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)} />
           <input style={inp} type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
-          {error && <div style={{ color:PALETTE.accent, fontSize:13 }}>{error}</div>}
-          <button onClick={handleLogin} disabled={loading} style={{ background:PALETTE.info, border:"none", borderRadius:8, color:"#fff", padding:"11px", fontSize:14, fontWeight:600, cursor:loading?"default":"pointer", opacity:loading?0.7:1 }}>
+          {error && <div style={{ color:PALETTE.accent, fontSize:13, fontWeight: 500 }}>{error}</div>}
+          <button onClick={handleLogin} disabled={loading} style={{ background:PALETTE.text, border:"none", borderRadius:8, color:"#fff", padding:"12px", fontSize:14, fontWeight:600, cursor:loading?"default":"pointer", opacity:loading?0.7:1, transition:"opacity 0.2s" }}>
             {loading ? "Signing in…" : "Sign In"}
           </button>
         </div>
@@ -79,10 +83,17 @@ function LoginScreen({ onLogin }) {
 // ─── Sub-components ─────────────────────────────────────────────────────────
 function KPICard({ label, value, color, icon, flash }) {
   return (
-    <div style={{ background:PALETTE.surface, border:`1px solid ${flash ? color : PALETTE.border}`, borderRadius:12, padding:"20px 24px", display:"flex", flexDirection:"column", gap:6, flex:1, minWidth:180, transition:"border-color 0.4s" }}>
-      <span style={{ fontSize:26, lineHeight:1 }}>{icon}</span>
-      <span style={{ fontSize:38, fontWeight:700, color, fontVariantNumeric:"tabular-nums" }}>{value}</span>
-      <span style={{ fontSize:13, color:PALETTE.muted, letterSpacing:"0.03em", textTransform:"uppercase" }}>{label}</span>
+    <div style={{ 
+      background:PALETTE.surface, 
+      border:`1px solid ${flash ? color : PALETTE.border}`, 
+      borderRadius:12, padding:"24px", display:"flex", flexDirection:"column", gap:8, 
+      flex:1, minWidth:220, boxShadow: SHADOW, transition:"all 0.3s ease" 
+    }}>
+      <div style={{ display:"flex", justifyContent:"between", alignItems:"center", width:"100%" }}>
+        <span style={{ fontSize:13, fontWeight:600, color:PALETTE.muted, letterSpacing:"0.03em", textTransform:"uppercase" }}>{label}</span>
+        <span style={{ fontSize:20, marginLeft:"auto" }}>{icon}</span>
+      </div>
+      <span style={{ fontSize:36, fontWeight:700, color:PALETTE.text, fontVariantNumeric:"tabular-nums", letterSpacing:"-0.02em" }}>{value}</span>
     </div>
   );
 }
@@ -90,7 +101,11 @@ function KPICard({ label, value, color, icon, flash }) {
 function Badge({ type }) {
   const isFall = type === "FLOOR_FALL";
   return (
-    <span style={{ padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:700, background: isFall?"rgba(233,69,96,0.15)":"rgba(245,166,35,0.15)", color: isFall?PALETTE.accent:PALETTE.warn }}>
+    <span style={{ 
+      padding:"4px 10px", borderRadius:6, fontSize:11, fontWeight:700, letterSpacing:"0.04em",
+      background: isFall?"rgba(225,29,72,0.08)":"rgba(217,119,6,0.08)", 
+      color: isFall?PALETTE.accent:PALETTE.warn 
+    }}>
       {isFall ? "FALL" : "BED EXIT"}
     </span>
   );
@@ -99,11 +114,11 @@ function Badge({ type }) {
 function ImageModal({ url, onClose }) {
   if (!url) return null;
   return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:100, background:"rgba(0,0,0,0.8)", backdropFilter:"blur(4px)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:14, overflow:"hidden", maxWidth:720, width:"90%" }}>
-        <div style={{ padding:"14px 18px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <span style={{ color:PALETTE.text, fontWeight:600 }}>Verification Photo</span>
-          <button onClick={onClose} style={{ background:"none", border:"none", color:PALETTE.muted, fontSize:22, cursor:"pointer" }}>×</button>
+    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:100, background:"rgba(15,23,42,0.3)", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:PALETTE.surface, borderRadius:16, overflow:"hidden", maxWidth:720, width:"90%", boxShadow: SHADOW_LG }}>
+        <div style={{ padding:"16px 20px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ color:PALETTE.text, fontWeight:600, fontSize:15 }}>Verification Photo</span>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:PALETTE.muted, fontSize:24, cursor:"pointer", lineHeight:1 }}>×</button>
         </div>
         <img src={url} alt="Event frame" style={{ width:"100%", display:"block" }} />
       </div>
@@ -114,24 +129,22 @@ function ImageModal({ url, onClose }) {
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:8, padding:"8px 14px", fontSize:13 }}>
-      <div style={{ color:PALETTE.muted, marginBottom:4 }}>{label}</div>
-      {payload.map(p => <div key={p.name} style={{ color:p.color }}>{p.name}: <strong>{p.value}</strong></div>)}
+    <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:8, padding:"10px 14px", fontSize:13, boxShadow: SHADOW_MD }}>
+      <div style={{ color:PALETTE.muted, marginBottom:6, fontWeight:500 }}>{label}</div>
+      {payload.map(p => <div key={p.name} style={{ color:PALETTE.text, display:"flex", gap:12, justifyContent:"space-between", margin:"2px 0" }}><span>{p.name}:</span> <strong>{p.value}</strong></div>)}
     </div>
   );
 }
 
-// ─── Live indicator dot ──────────────────────────────────────────────────────
 function LiveDot({ connected }) {
   return (
-    <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12, color: connected ? PALETTE.safe : PALETTE.muted }}>
-      <span style={{ width:8, height:8, borderRadius:"50%", background: connected ? PALETTE.safe : PALETTE.muted, boxShadow: connected ? `0 0 6px ${PALETTE.safe}` : "none", display:"inline-block" }} />
-      {connected ? "Live" : "Connecting…"}
+    <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, fontWeight:500, color: connected ? PALETTE.safe : PALETTE.muted }}>
+      <span style={{ width:8, height:8, borderRadius:"50%", background: connected ? PALETTE.safe : PALETTE.muted, display:"inline-block" }} />
+      {connected ? "Live Connected" : "Connecting…"}
     </span>
   );
 }
 
-// ─── Alert toast ─────────────────────────────────────────────────────────────
 function Toast({ event, onDismiss }) {
   useEffect(() => {
     const t = setTimeout(onDismiss, 8000);
@@ -139,19 +152,23 @@ function Toast({ event, onDismiss }) {
   }, [onDismiss]);
 
   const isFall = event.event_type === "FLOOR_FALL";
+  const borderLeftColor = isFall ? PALETTE.accent : PALETTE.warn;
+  
   return (
     <div style={{
       position:"fixed", bottom:24, right:24, zIndex:200,
-      background: isFall ? "rgba(233,69,96,0.95)" : "rgba(245,166,35,0.95)",
-      color:"#fff", borderRadius:12, padding:"16px 20px", minWidth:300,
-      boxShadow:"0 8px 32px rgba(0,0,0,0.4)", animation:"slideIn 0.3s ease",
+      background: PALETTE.surface, color: PALETTE.text, borderRadius:12, padding:"20px", minWidth:320,
+      boxShadow:"0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1)", 
+      borderLeft: `4px solid ${borderLeftColor}`, borderTop: `1px solid ${PALETTE.border}`,
+      borderRight: `1px solid ${PALETTE.border}`, borderBottom: `1px solid ${PALETTE.border}`,
+      animation:"slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
     }}>
-      <div style={{ fontWeight:700, fontSize:15, marginBottom:4 }}>
+      <div style={{ fontWeight:700, fontSize:15, marginBottom:4, display:"flex", alignItems:"center", gap:6 }}>
         {isFall ? "⚠️ Fall Detected" : "🚶 Bed Exit Detected"}
       </div>
-      <div style={{ fontSize:13, opacity:0.9 }}>Room {event.room_number} · Track #{event.patient_track_id}</div>
-      {event.kinematics && <div style={{ fontSize:12, opacity:0.8, marginTop:2 }}>{event.kinematics}</div>}
-      <button onClick={onDismiss} style={{ position:"absolute", top:10, right:12, background:"none", border:"none", color:"#fff", fontSize:18, cursor:"pointer", opacity:0.7 }}>×</button>
+      <div style={{ fontSize:13, color: PALETTE.muted }}>Room {event.room_number} · Track #{event.patient_track_id}</div>
+      {event.kinematics && <div style={{ fontSize:12, color: PALETTE.muted, marginTop:6, fontStyle: "italic" }}>{event.kinematics}</div>}
+      <button onClick={onDismiss} style={{ position:"absolute", top:14, right:14, background:"none", border:"none", color:PALETTE.muted, fontSize:20, cursor:"pointer", opacity:0.7 }}>×</button>
     </div>
   );
 }
@@ -173,7 +190,6 @@ function Dashboard({ onLogout }) {
 
   const mono = { fontFamily:"'JetBrains Mono','Fira Code',monospace" };
 
-  // ── REST fetch (initial load + manual refresh) ───────────────────────────
   const refresh = useCallback(async () => {
     setLoading(true); setError("");
     try {
@@ -198,7 +214,6 @@ function Dashboard({ onLogout }) {
     setLoading(false);
   }, [onLogout]);
 
-  // ── WebSocket (real-time push) ───────────────────────────────────────────
   useEffect(() => {
     const token = localStorage.getItem("jwt");
     const uid   = localStorage.getItem("uid");
@@ -211,37 +226,24 @@ function Dashboard({ onLogout }) {
       ws = new WebSocket(`${WS_URL}/api/v1/ws/${uid}?token=${token}`);
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        setWsConnected(true);
-        console.log("[WS] Connected");
-      };
-
+      ws.onopen = () => { setWsConnected(true); };
       ws.onmessage = (msg) => {
         try {
           const data = JSON.parse(msg.data);
-          if (data.type === "PING") return;   // keepalive, ignore
+          if (data.type === "PING") return;
 
           if (data.type === "NEW_EVENT") {
             const ev = data.event;
-
-            // Prepend to audit trail
             setEvents(prev => [ev, ...prev].slice(0, 50));
-
-            // Toast alert
             setToast(ev);
-
-            // Flash KPI cards and bump counters
             setFlashKpi(true);
             setTimeout(() => setFlashKpi(false), 1200);
             setKpi(prev => ({
               ...prev,
-              total_falls_24h: ev.event_type === "FLOOR_FALL"
-                ? prev.total_falls_24h + 1 : prev.total_falls_24h,
-              active_bed_exit_warnings: ev.event_type === "BED_EXIT"
-                ? prev.active_bed_exit_warnings + 1 : prev.active_bed_exit_warnings,
+              total_falls_24h: ev.event_type === "FLOOR_FALL" ? prev.total_falls_24h + 1 : prev.total_falls_24h,
+              active_bed_exit_warnings: ev.event_type === "BED_EXIT" ? prev.active_bed_exit_warnings + 1 : prev.active_bed_exit_warnings,
             }));
 
-            // Add to hourly chart
             const bucket = new Date(ev.timestamp).toISOString().slice(0, 13) + ":00";
             setHourly(prev => {
               const existing = prev.find(h => h.hour === bucket);
@@ -251,111 +253,103 @@ function Dashboard({ onLogout }) {
                   : h
                 );
               }
-              return [...prev, { hour: bucket, falls: ev.event_type === "FLOOR_FALL" ? 1 : 0, exits: ev.event_type === "BED_EXIT" ? 1 : 0 }]
-                .sort((a, b) => a.hour.localeCompare(b.hour));
+              return [...prev, { hour: bucket, falls: ev.event_type === "FLOOR_FALL" ? 1 : 0, exits: ev.event_type === "BED_EXIT" ? 1 : 0 }].sort((a, b) => a.hour.localeCompare(b.hour));
             });
           }
-        } catch (e) {
-          console.warn("[WS] Parse error", e);
-        }
+        } catch (e) { console.warn("[WS] Parse error", e); }
       };
 
       ws.onclose = () => {
         setWsConnected(false);
-        console.log("[WS] Disconnected — reconnecting in 5 s");
         reconnectTimer = setTimeout(connect, 5000);
       };
-
       ws.onerror = () => ws.close();
     }
 
     connect();
-    return () => {
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    };
+    return () => { clearTimeout(reconnectTimer); ws?.close(); };
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
   return (
-    <div style={{ fontFamily:"'Inter','Helvetica Neue',sans-serif", background:PALETTE.bg, minHeight:"100vh", color:PALETTE.text, padding:"24px 28px" }}>
-      <style>{`@keyframes slideIn { from { transform: translateX(120%); opacity:0; } to { transform: translateX(0); opacity:1; } }`}</style>
+    <div style={{ fontFamily:"'Inter',sans-serif", background:PALETTE.bg, minHeight:"100vh", color:PALETTE.text, padding:"40px 48px" }}>
+      <style>{`@keyframes slideIn { from { transform: translateY(20px); opacity:0; } to { transform: translateY(0); opacity:1; } }`}</style>
 
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:28 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <span style={{ fontSize:28 }}>🛡️</span>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:40 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+        
           <div>
-            <div style={{ fontSize:22, fontWeight:700, letterSpacing:"-0.02em" }}>SafeWatch</div>
-            <div style={{ fontSize:12, color:PALETTE.muted }}>Edge-to-Cloud Fall Detection</div>
+            <div style={{ fontSize:24, fontWeight:700, letterSpacing:"-0.03em" }}>The AI Guard</div>
+            <div style={{ fontSize:13, color:PALETTE.muted, marginTop:2 }}>Edge-to-Cloud Incident Intelligence</div>
           </div>
         </div>
-        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:20 }}>
           <LiveDot connected={wsConnected} />
-          <span style={{ fontSize:12, color:PALETTE.muted }}>Updated: {lastRefresh.toLocaleTimeString()}</span>
-          <button onClick={refresh} disabled={loading} style={{ background:"transparent", border:`1px solid ${PALETTE.border}`, color:loading?PALETTE.muted:PALETTE.info, borderRadius:8, padding:"6px 14px", cursor:loading?"default":"pointer", fontSize:13, fontWeight:500 }}>
-            {loading ? "Refreshing…" : "↻ Refresh"}
+          <span style={{ fontSize:13, color:PALETTE.muted }}>Updated: {lastRefresh.toLocaleTimeString()}</span>
+          <button onClick={refresh} disabled={loading} style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, color:PALETTE.text, borderRadius:8, padding:"8px 16px", cursor:loading?"default":"pointer", fontSize:13, fontWeight:600, boxShadow: SHADOW }}>
+            {loading ? "Refreshing…" : "Refresh"}
           </button>
-          <button onClick={onLogout} style={{ background:"transparent", border:`1px solid ${PALETTE.border}`, color:PALETTE.muted, borderRadius:8, padding:"6px 14px", cursor:"pointer", fontSize:13 }}>Sign out</button>
+          <button onClick={onLogout} style={{ background:"transparent", border:"none", color:PALETTE.muted, cursor:"pointer", fontSize:13, fontWeight:500 }}>Sign out</button>
         </div>
       </div>
 
-      {error && <div style={{ background:"rgba(233,69,96,0.1)", border:`1px solid ${PALETTE.accent}`, borderRadius:8, padding:"10px 16px", marginBottom:20, fontSize:13, color:PALETTE.accent }}>⚠️ {error}</div>}
+      {error && <div style={{ background:"#fef2f2", border:`1px solid #fecaca`, borderRadius:8, padding:"12px 16px", marginBottom:24, fontSize:13, color:PALETTE.accent, fontWeight:500 }}>⚠️ {error}</div>}
 
       {/* KPI Row */}
-      <div style={{ display:"flex", gap:16, marginBottom:24, flexWrap:"wrap" }}>
-        <KPICard label="Active Protected Beds"    value={kpi.active_protected_beds}   color={PALETTE.safe}   icon="🛏️" flash={flashKpi} />
-        <KPICard label="Total Falls — 24 Hours"   value={kpi.total_falls_24h}          color={PALETTE.accent} icon="⚠️" flash={flashKpi} />
-        <KPICard label="Active Bed-Exit Warnings" value={kpi.active_bed_exit_warnings} color={PALETTE.warn}   icon="🚶" flash={flashKpi} />
+      <div style={{ display:"flex", gap:24, marginBottom:32, flexWrap:"wrap" }}>
+        <KPICard label="Active Protected Beds"    value={kpi.active_protected_beds}   color={PALETTE.safe}   flash={flashKpi} />
+        <KPICard label="Total Falls (24h)"        value={kpi.total_falls_24h}          color={PALETTE.accent}  flash={flashKpi} />
+        <KPICard label="Active Bed Exits"         value={kpi.active_bed_exit_warnings} color={PALETTE.warn}    flash={flashKpi} />
       </div>
 
       {/* Charts Row */}
-      <div style={{ display:"flex", gap:16, marginBottom:24, flexWrap:"wrap" }}>
-        <div style={{ flex:2, minWidth:340, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"20px 20px 12px" }}>
-          <div style={{ fontSize:14, fontWeight:600, marginBottom:16 }}>Hourly Incident Distribution — 24 h</div>
+      <div style={{ display:"flex", gap:24, marginBottom:32, flexWrap:"wrap" }}>
+        <div style={{ flex:2, minWidth:400, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"24px", boxShadow: SHADOW }}>
+          <div style={{ fontSize:15, fontWeight:700, marginBottom:24, letterSpacing: "-0.01em" }}>Hourly Incident Distribution</div>
           {hourly.length === 0
-            ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"60px 0", textAlign:"center" }}>No incidents in the last 24 hours</div>
+            ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"74px 0", textAlign:"center" }}>No incidents registered in the last 24 hours</div>
             : (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={hourly} margin={{ top:4, right:8, left:-20, bottom:0 }}>
                   <XAxis dataKey="hour" tick={{ fill:PALETTE.muted, fontSize:11 }} tickLine={false} axisLine={false} interval={3} />
                   <YAxis tick={{ fill:PALETTE.muted, fontSize:11 }} tickLine={false} axisLine={false} />
                   <Tooltip content={<ChartTooltip />} />
-                  <Line type="monotone" dataKey="falls" stroke={PALETTE.accent} strokeWidth={2} dot={false} name="Falls" />
-                  <Line type="monotone" dataKey="exits" stroke={PALETTE.warn}   strokeWidth={2} dot={false} name="Bed Exits" />
+                  <Line type="monotone" dataKey="falls" stroke={PALETTE.accent} strokeWidth={2.5} dot={false} name="Falls" />
+                  <Line type="monotone" dataKey="exits" stroke={PALETTE.warn}   strokeWidth={2.5} dot={false} name="Bed Exits" />
                 </LineChart>
               </ResponsiveContainer>
             )
           }
-          <div style={{ display:"flex", gap:20, marginTop:8, justifyContent:"center" }}>
+          <div style={{ display:"flex", gap:24, marginTop:16, justifyContent:"center" }}>
             {[["Falls", PALETTE.accent], ["Bed Exits", PALETTE.warn]].map(([l, c]) => (
-              <div key={l} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:PALETTE.muted }}>
-                <span style={{ width:18, height:3, background:c, display:"inline-block", borderRadius:2 }} />{l}
+              <div key={l} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12, color:PALETTE.muted, fontWeight:500 }}>
+                <span style={{ width:12, height:4, background:c, display:"inline-block", borderRadius:2 }} />{l}
               </div>
             ))}
           </div>
         </div>
 
-        <div style={{ flex:1, minWidth:260, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"20px 20px 12px" }}>
-          <div style={{ fontSize:14, fontWeight:600, marginBottom:8 }}>Fall Typology — 24 h</div>
+        <div style={{ flex:1, minWidth:280, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"24px", boxShadow: SHADOW }}>
+          <div style={{ fontSize:15, fontWeight:700, marginBottom:16, letterSpacing: "-0.01em" }}>Fall Typology</div>
           {typology.length === 0
-            ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"60px 0", textAlign:"center" }}>No falls recorded</div>
+            ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"74px 0", textAlign:"center" }}>No logs available</div>
             : (
-              <ResponsiveContainer width="100%" height={200}>
+              <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
-                  <Pie data={typology} dataKey="count" nameKey="label" cx="50%" cy="50%" innerRadius={52} outerRadius={80} paddingAngle={3}>
+                  <Pie data={typology} dataKey="count" nameKey="label" cx="50%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={4}>
                     {typology.map((_, idx) => <Cell key={idx} fill={DONUT_COLORS[idx % DONUT_COLORS.length]} />)}
                   </Pie>
-                  <Tooltip formatter={(v,n) => [v,n]} contentStyle={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:8, fontSize:12 }} />
+                  <Tooltip formatter={(v,n) => [v,n]} contentStyle={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:8, fontSize:12, boxShadow:SHADOW }} />
                 </PieChart>
               </ResponsiveContainer>
             )
           }
-          <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:4 }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:12 }}>
             {typology.map((t, i) => (
-              <div key={t.label} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12 }}>
-                <span style={{ width:10, height:10, borderRadius:3, background:DONUT_COLORS[i], flexShrink:0 }} />
+              <div key={t.label} style={{ display:"flex", alignItems:"center", gap:8, fontSize:13 }}>
+                <span style={{ width:8, height:8, borderRadius:"50%", background:DONUT_COLORS[i], flexShrink:0 }} />
                 <span style={{ color:PALETTE.muted, flex:1, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{t.label}</span>
                 <span style={{ color:PALETTE.text, fontWeight:600, ...mono }}>{t.count}</span>
               </div>
@@ -365,36 +359,36 @@ function Dashboard({ onLogout }) {
       </div>
 
       {/* Audit Trail */}
-      <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, overflow:"hidden" }}>
-        <div style={{ padding:"16px 20px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <div style={{ fontSize:14, fontWeight:600 }}>Incident Audit Trail</div>
-          <span style={{ fontSize:12, color:PALETTE.muted }}>{events.length} recent events</span>
+      <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, overflow:"hidden", boxShadow: SHADOW }}>
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:15, fontWeight:700, letterSpacing: "-0.01em" }}>Incident Audit Trail</div>
+          <span style={{ fontSize:12, fontWeight:500, color:PALETTE.muted, background:PALETTE.bg, padding:"4px 10px", borderRadius:20 }}>{events.length} recent logs</span>
         </div>
         {events.length === 0
-          ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"40px", textAlign:"center" }}>No events recorded yet.</div>
+          ? <div style={{ color:PALETTE.muted, fontSize:13, padding:"48px", textAlign:"center" }}>No real-time logs currently populated.</div>
           : (
             <div style={{ overflowX:"auto" }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
                 <thead>
-                  <tr style={{ borderBottom:`1px solid ${PALETTE.border}` }}>
+                  <tr style={{ borderBottom:`1px solid ${PALETTE.border}`, background: PALETTE.bg }}>
                     {["Time","Room","Track ID","Event","Kinematics","Impact Zone","Head Risk","Photo"].map(h => (
-                      <th key={h} style={{ padding:"10px 16px", textAlign:"left", fontWeight:500, color:PALETTE.muted, whiteSpace:"nowrap" }}>{h}</th>
+                      <th key={h} style={{ padding:"12px 24px", textAlign:"left", fontWeight:600, color:PALETTE.muted, whiteSpace:"nowrap", fontSize:12, textTransform:"uppercase", letterSpacing:"0.03em" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {events.map((e, idx) => (
-                    <tr key={e.id ?? idx} style={{ borderBottom:`1px solid ${PALETTE.border}`, background: idx%2===0?"transparent":"rgba(255,255,255,0.015)" }}>
-                      <td style={{ padding:"11px 16px", ...mono, color:PALETTE.muted, fontSize:12, whiteSpace:"nowrap" }}>{new Date(e.timestamp).toLocaleString()}</td>
-                      <td style={{ padding:"11px 16px", fontWeight:600 }}>{e.room_number}</td>
-                      <td style={{ padding:"11px 16px", ...mono, color:PALETTE.info }}>#{e.patient_track_id}</td>
-                      <td style={{ padding:"11px 16px" }}><Badge type={e.event_type} /></td>
-                      <td style={{ padding:"11px 16px", color:PALETTE.muted, maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{e.kinematics||"—"}</td>
-                      <td style={{ padding:"11px 16px", color:PALETTE.muted }}>{e.primary_impact||"—"}</td>
-                      <td style={{ padding:"11px 16px", whiteSpace:"nowrap" }}>{e.head_strike_risk||"—"}</td>
-                      <td style={{ padding:"11px 16px" }}>
+                    <tr key={e.id ?? idx} style={{ borderBottom:`1px solid ${PALETTE.border}`, background: "transparent", transition:"background 0.2s" }} onMouseEnter={(e)=>e.currentTarget.style.backgroundColor="#f8fafc"} onMouseLeave={(e)=>e.currentTarget.style.backgroundColor="transparent"}>
+                      <td style={{ padding:"14px 24px", ...mono, color:PALETTE.muted, fontSize:12, whiteSpace:"nowrap" }}>{new Date(e.timestamp).toLocaleString()}</td>
+                      <td style={{ padding:"14px 24px", fontWeight:600, color:PALETTE.text }}>{e.room_number}</td>
+                      <td style={{ padding:"14px 24px", ...mono, color:PALETTE.info, fontWeight:500 }}>#{e.patient_track_id}</td>
+                      <td style={{ padding:"14px 24px" }}><Badge type={e.event_type} /></td>
+                      <td style={{ padding:"14px 24px", color:PALETTE.muted, maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{e.kinematics||"—"}</td>
+                      <td style={{ padding:"14px 24px", color:PALETTE.muted }}>{e.primary_impact||"—"}</td>
+                      <td style={{ padding:"14px 24px", color:PALETTE.muted, fontWeight:500 }}>{e.head_strike_risk||"—"}</td>
+                      <td style={{ padding:"14px 24px" }}>
                         {e.image_url
-                          ? <button onClick={()=>setModal(e.image_url)} style={{ background:"rgba(88,166,255,0.1)", border:`1px solid rgba(88,166,255,0.3)`, color:PALETTE.info, borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:12, fontWeight:500 }}>View</button>
+                          ? <button onClick={()=>setModal(e.image_url)} style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, color:PALETTE.text, borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:12, fontWeight:600, boxShadow: SHADOW }}>View</button>
                           : <span style={{ color:PALETTE.border }}>—</span>
                         }
                       </td>
