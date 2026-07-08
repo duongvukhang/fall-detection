@@ -20,20 +20,44 @@ from models import User
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration (pull from environment in production)
 # ─────────────────────────────────────────────────────────────────────────────
-SECRET_KEY      : str = os.getenv("JWT_SECRET_KEY", "CHANGE_ME_IN_PRODUCTION_USE_openssl_rand_hex_32")
+ENV = os.getenv("ENV", "development").lower()
+
+_DEV_ONLY_FALLBACK = "CHANGE_ME_IN_PRODUCTION_USE_openssl_rand_hex_32"
+SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", _DEV_ONLY_FALLBACK)
+
+# FIX: fail fast instead of silently signing tokens with a public fallback key.
+if ENV == "production" and SECRET_KEY == _DEV_ONLY_FALLBACK:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not set. Refusing to start in production with the "
+        "default signing key. Set JWT_SECRET_KEY (e.g. `openssl rand -hex 32`)."
+    )
+
 ALGORITHM       : str = "HS256"
 ACCESS_TOKEN_TTL: int = int(os.getenv("JWT_TTL_MINUTES", 60 * 24))  # 24 h default
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Password
 # ─────────────────────────────────────────────────────────────────────────────
+# bcrypt only uses the first 72 bytes of input; anything past that is silently
+# ignored by some implementations and raises in others. Truncate explicitly so
+# behavior is consistent and predictable rather than backend-dependent.
+_BCRYPT_MAX_BYTES = 72
+
+
+def _bcrypt_safe(plain: str) -> bytes:
+    return plain.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+
 
 def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt(rounds=12)).decode()
+    return bcrypt.hashpw(_bcrypt_safe(plain), bcrypt.gensalt(rounds=12)).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(_bcrypt_safe(plain), hashed.encode())
+    except ValueError:
+        # Malformed hash in DB — treat as a failed auth, never raise 500 for this.
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

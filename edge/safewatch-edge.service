@@ -1,0 +1,17 @@
+[Unit]
+Description=SafeWatch Jetson Nano edge detector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/safewatch
+EnvironmentFile=/etc/safewatch-edge.env
+ExecStart=/opt/safewatch/venv/bin/python /opt/safewatch/edge_detector.py --source csi --room ${ROOM_NUMBER} --api-url ${CLOUD_API_URL} --api-key ${EDGE_API_KEY} --model ${YOLO_MODEL} --no-display
+Restart=always
+RestartSec=10
+User=safewatch
+Group=safewatch
+
+[Install]
+WantedBy=multi-user.target

@@ -19,6 +19,9 @@ python-jose[cryptography]==3.3.0
 pydantic[email]==2.10.2
 python-multipart==0.0.12   # form data
 
+# Rate limiting (auth + telemetry endpoints)
+slowapi==0.1.9
+
 # HTTP client (used by edge script, handy for tests too)
 requests==2.32.3
 httpx==0.28.0              # async test client

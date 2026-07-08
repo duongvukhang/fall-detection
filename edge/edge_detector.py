@@ -1,4 +1,3 @@
-
 """
 SafeWatch Edge — YOLOv8n-pose Fall & Bed-Exit Detector
 =======================================================
@@ -16,18 +15,42 @@ Usage:
     # Video file:
     python edge_detector.py --source /path/to/video.mp4 --room "ROOM-01" \
         --api-url http://localhost:8000 --api-key YOUR_TOKEN
+
+AUDIT-HARDENING CHANGES (see AUDIT_REPORT.md #16-18):
+  - Telemetry POSTs now go through a shared requests.Session with a
+    urllib3 Retry adapter (connection pooling + real backoff) instead of a
+    hand-rolled sleep loop.
+  - Dispatch runs on a bounded ThreadPoolExecutor(max_workers=4) instead of
+    spawning a brand-new, unbounded thread per event — a flaky network used
+    to be able to pile up dozens of concurrent blocking threads.
+  - Events that fail all retries are now appended to an on-disk queue
+    (pending_events.jsonl) instead of being dropped, and a background loop
+    retries them every 30s. For a fall-detection product, silently losing an
+    event on a network blip is a patient-safety gap, not just a log line.
+  - Optional heartbeat ping every 60s so the cloud side can tell "camera
+    offline" apart from "no falls happened". Degrades gracefully (a 404 from
+    an older backend is treated as informational, not fatal).
 """
 
 import argparse
+import json
 import os
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import cv2
 import numpy as np
 import requests
+from requests.adapters import HTTPAdapter
 from ultralytics import YOLO
+
+try:
+    from urllib3.util.retry import Retry
+except ImportError:  # pragma: no cover - requests vendors urllib3 on some installs
+    from requests.packages.urllib3.util.retry import Retry
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -53,6 +76,12 @@ HEAD_HIP_FLAT_DELTA = 0.05
 # Resolution cap (keeps RAM usage low on Jetson)
 FRAME_W = 640
 FRAME_H = 480
+
+# Telemetry reliability tuning
+PENDING_QUEUE_PATH   = Path(os.getenv("PENDING_QUEUE_PATH", "pending_events.jsonl"))
+QUEUE_FLUSH_INTERVAL = 30   # seconds
+HEARTBEAT_INTERVAL   = 60   # seconds
+MAX_DISPATCH_WORKERS = 4
 
 C = {
     "safe":   (50, 200, 50),
@@ -289,44 +318,143 @@ class PersonTracker:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cloud telemetry (non-blocking thread)
+# Cloud telemetry — session, bounded dispatch pool, and offline queue
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _post_to_cloud(event_type, state, room_number, cloud_api_url, edge_api_key):
-    payload = {
-        "room_number"      : room_number,
-        "patient_track_id" : state["track_id"],
-        "event_type"       : event_type,
-        "kinematics"       : state.get("kinematics")       or None,
-        "primary_impact"   : state.get("primary_impact")   or None,
-        "head_strike_risk" : state.get("head_strike_risk") or None,
-        "image_url"        : None,
-    }
-    for attempt in range(3):
+def build_session() -> requests.Session:
+    """
+    A single pooled Session with a real urllib3 Retry policy (exponential
+    backoff, retries on 5xx/connection errors) replaces the old hand-rolled
+    `for attempt in range(3): ... time.sleep(2**attempt)` loop, and reuses
+    TCP connections instead of opening a fresh one per event.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.5,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=frozenset(["POST", "PATCH"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+class TelemetryClient:
+    """
+    Owns the HTTP session, a bounded thread pool for non-blocking dispatch,
+    and an on-disk queue so events survive a network/cloud outage instead of
+    being silently dropped once retries are exhausted.
+    """
+
+    def __init__(self, cloud_api_url: str, api_key: str):
+        self.cloud_api_url = cloud_api_url.rstrip("/")
+        self.api_key       = api_key
+        self.session        = build_session()
+        self.executor        = ThreadPoolExecutor(max_workers=MAX_DISPATCH_WORKERS)
+        self._queue_lock      = threading.Lock()
+        self._stop            = threading.Event()
+        self._flush_thread     = threading.Thread(target=self._flush_loop, daemon=True)
+        self._flush_thread.start()
+
+    def _headers(self) -> dict:
+        return {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
+
+    def _post(self, path: str, payload: dict) -> bool:
         try:
-            resp = requests.post(
-                f"{cloud_api_url}/api/v1/telemetry/events",
-                json    = payload,
-                headers = {
-                    "X-API-KEY"    : edge_api_key,
-                    "Content-Type" : "application/json",
-                },
-                timeout = 10,
+            resp = self.session.post(
+                f"{self.cloud_api_url}{path}",
+                json=payload,
+                headers=self._headers(),
+                timeout=10,
             )
-            print(f"[CLOUD] {event_type} → HTTP {resp.status_code} (track {state['track_id']})")
-            return
+            ok = resp.status_code < 300
+            print(f"[CLOUD] {path} -> HTTP {resp.status_code}")
+            return ok
         except requests.RequestException as exc:
-            print(f"[WARN] Attempt {attempt+1}/3 failed: {exc}")
-            time.sleep(2 ** attempt)
-    print(f"[ERROR] All retries exhausted for {event_type} track {state['track_id']}")
+            print(f"[WARN] {path} failed: {exc}")
+            return False
 
+    def _enqueue_pending(self, path: str, payload: dict) -> None:
+        with self._queue_lock:
+            PENDING_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with PENDING_QUEUE_PATH.open("a") as f:
+                f.write(json.dumps({"path": path, "payload": payload}) + "\n")
 
-def dispatch_telemetry(event_type, state, room_number, cloud_api_url, edge_api_key):
-    threading.Thread(
-        target = _post_to_cloud,
-        args   = (event_type, state, room_number, cloud_api_url, edge_api_key),
-        daemon = True,
-    ).start()
+    def _dispatch(self, path: str, payload: dict) -> None:
+        if not self._post(path, payload):
+            # FIX: previously this was the end of the line — after 3 retries
+            # the event was just printed and dropped. Now it's persisted so
+            # the background flush loop can retry once connectivity returns.
+            self._enqueue_pending(path, payload)
+
+    def send_event(self, event_type: str, state: dict, room_number: str) -> None:
+        payload = {
+            "room_number"      : room_number,
+            "patient_track_id" : state["track_id"],
+            "event_type"       : event_type,
+            "kinematics"       : state.get("kinematics")       or None,
+            "primary_impact"   : state.get("primary_impact")   or None,
+            "head_strike_risk" : state.get("head_strike_risk") or None,
+            "image_url"        : None,
+        }
+        # FIX: bounded pool instead of an unbounded thread-per-event spawn —
+        # a flaky link used to be able to accumulate dozens of blocked
+        # threads, each holding a socket, on a resource-constrained Jetson.
+        self.executor.submit(self._dispatch, "/api/v1/telemetry/events", payload)
+
+    def send_heartbeat(self, room_number: str) -> None:
+        payload = {"room_number": room_number, "status": "ONLINE"}
+        self.executor.submit(self._dispatch_heartbeat, payload)
+
+    def _dispatch_heartbeat(self, payload: dict) -> None:
+        try:
+            resp = self.session.post(
+                f"{self.cloud_api_url}/api/v1/telemetry/heartbeat",
+                json=payload, headers=self._headers(), timeout=5,
+            )
+            if resp.status_code == 404:
+                # Older backend without the heartbeat route — not an error.
+                return
+            print(f"[HEARTBEAT] -> HTTP {resp.status_code}")
+        except requests.RequestException as exc:
+            print(f"[WARN] heartbeat failed: {exc}")
+
+    def _flush_loop(self) -> None:
+        while not self._stop.is_set():
+            time.sleep(QUEUE_FLUSH_INTERVAL)
+            self._flush_pending()
+
+    def _flush_pending(self) -> None:
+        if not PENDING_QUEUE_PATH.exists():
+            return
+        with self._queue_lock:
+            lines = PENDING_QUEUE_PATH.read_text().splitlines()
+            PENDING_QUEUE_PATH.unlink(missing_ok=True)
+
+        still_pending = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not self._post(item["path"], item["payload"]):
+                still_pending.append(line)
+
+        if still_pending:
+            with self._queue_lock:
+                PENDING_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with PENDING_QUEUE_PATH.open("a") as f:
+                    f.write("\n".join(still_pending) + "\n")
+            print(f"[QUEUE] {len(still_pending)} event(s) still pending, will retry.")
+        elif lines:
+            print(f"[QUEUE] Flushed {len(lines)} previously queued event(s).")
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        self.executor.shutdown(wait=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -418,6 +546,11 @@ def main():
             args.save, cv2.VideoWriter_fourcc(*"mp4v"), fps_src, (fw, fh)
         )
 
+    telemetry = TelemetryClient(args.api_url, args.api_key)
+    # Flush anything left over from a previous run before we start streaming.
+    telemetry._flush_pending()
+
+    last_heartbeat = 0.0
     trackers: dict[int, PersonTracker] = {}
     fps_buf  = deque(maxlen=30)
     prev_t   = time.time()
@@ -426,76 +559,78 @@ def main():
     print(f"[INFO] Sending events to: {args.api_url}")
     print("[INFO] Press Q to quit" if not args.no_display else "[INFO] Headless mode — Ctrl-C to stop")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        now = time.time()
-        fps_buf.append(1.0 / max(now - prev_t, 1e-6))
-        prev_t = now
-
-        # ── YOLOv8 inference + tracking ───────────────────────────────────
-        results = model.track(frame, persist=True, verbose=False, classes=[0])
-        frame_states: list[dict] = []
-
-        if results and results[0].keypoints is not None:
-            r       = results[0]
-            kp_data = r.keypoints.data.cpu().numpy()
-            boxes   = r.boxes
-
-            for i in range(len(kp_data)):
-                tid    = int(boxes.id[i].item()) if boxes.id is not None else i
-                kps    = yolo_kps_to_native(kp_data[i], fh, fw)
-                box_cy = float(boxes.xyxyn[i][1] + boxes.xyxyn[i][3]) / 2.0
-
-                if tid not in trackers:
-                    trackers[tid] = PersonTracker(tid)
-                tracker = trackers[tid]
-                state   = tracker.update(kps, box_cy)
-                frame_states.append(state)
-
-                if state["fall_active"] and not state["floor_api_transmitted"]:
-                    tracker.floor_api_transmitted = True
-                    dispatch_telemetry(
-                        "FLOOR_FALL", state, args.room, args.api_url, args.api_key
-                    )
-
-                if state["bed_exit_active"] and not state["bed_api_transmitted"]:
-                    tracker.bed_api_transmitted = True
-                    dispatch_telemetry(
-                        "BED_EXIT", state, args.room, args.api_url, args.api_key
-                    )
-
-                draw_skeleton(frame, kps, state["fall_active"])
-
-        # Prune lost tracks
-        active_ids = set()
-        if results and results[0].boxes.id is not None:
-            active_ids = {
-                int(results[0].boxes.id[i].item())
-                for i in range(len(results[0].boxes.id))
-            }
-        for gone_id in list(trackers.keys()):
-            if gone_id not in active_ids:
-                del trackers[gone_id]
-
-        fps_avg = float(np.mean(fps_buf)) if fps_buf else 0.0
-        draw_hud(frame, frame_states, fps_avg, args.room)
-
-        if writer:
-            writer.write(frame)
-
-        if not args.no_display:
-            cv2.imshow("SafeWatch Edge", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
                 break
 
-    cap.release()
-    if writer:
-        writer.release()
-    cv2.destroyAllWindows()
-    print("[INFO] SafeWatch stopped.")
+            now = time.time()
+            fps_buf.append(1.0 / max(now - prev_t, 1e-6))
+            prev_t = now
+
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                telemetry.send_heartbeat(args.room)
+                last_heartbeat = now
+
+            # ── YOLOv8 inference + tracking ───────────────────────────────
+            results = model.track(frame, persist=True, verbose=False, classes=[0])
+            frame_states: list[dict] = []
+
+            if results and results[0].keypoints is not None:
+                r       = results[0]
+                kp_data = r.keypoints.data.cpu().numpy()
+                boxes   = r.boxes
+
+                for i in range(len(kp_data)):
+                    tid    = int(boxes.id[i].item()) if boxes.id is not None else i
+                    kps    = yolo_kps_to_native(kp_data[i], fh, fw)
+                    box_cy = float(boxes.xyxyn[i][1] + boxes.xyxyn[i][3]) / 2.0
+
+                    if tid not in trackers:
+                        trackers[tid] = PersonTracker(tid)
+                    tracker = trackers[tid]
+                    state   = tracker.update(kps, box_cy)
+                    frame_states.append(state)
+
+                    if state["fall_active"] and not state["floor_api_transmitted"]:
+                        tracker.floor_api_transmitted = True
+                        telemetry.send_event("FLOOR_FALL", state, args.room)
+
+                    if state["bed_exit_active"] and not state["bed_api_transmitted"]:
+                        tracker.bed_api_transmitted = True
+                        telemetry.send_event("BED_EXIT", state, args.room)
+
+                    draw_skeleton(frame, kps, state["fall_active"])
+
+            # Prune lost tracks
+            active_ids = set()
+            if results and results[0].boxes.id is not None:
+                active_ids = {
+                    int(results[0].boxes.id[i].item())
+                    for i in range(len(results[0].boxes.id))
+                }
+            for gone_id in list(trackers.keys()):
+                if gone_id not in active_ids:
+                    del trackers[gone_id]
+
+            fps_avg = float(np.mean(fps_buf)) if fps_buf else 0.0
+            draw_hud(frame, frame_states, fps_avg, args.room)
+
+            if writer:
+                writer.write(frame)
+
+            if not args.no_display:
+                cv2.imshow("SafeWatch Edge", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+    finally:
+        cap.release()
+        if writer:
+            writer.release()
+        cv2.destroyAllWindows()
+        telemetry.shutdown()
+        print("[INFO] SafeWatch stopped.")
 
 
 if __name__ == "__main__":

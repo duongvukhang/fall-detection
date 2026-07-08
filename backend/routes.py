@@ -9,19 +9,27 @@ SafeWatch — API Route Handlers
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter, Depends, HTTPException, Query, Request,
+    WebSocket, WebSocketDisconnect, status,
+)
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 import asyncio
+import logging
 
 from database import get_db
 from models import Event, User
+from rate_limit import limiter
 from schemas import (
     DashboardAggregations,
     EventListResponse,
     EventOut,
     FallTypologySlice,
+    HeartbeatIngest,
+    HeartbeatResponse,
     HourlyBucket,
     KPIResponse,
     TelemetryIngest,
@@ -29,6 +37,7 @@ from schemas import (
     TokenResponse,
     UserLoginRequest,
     UserPublic,
+    UserRegisterOut,
     UserRegisterRequest,
 )
 from security import (
@@ -41,6 +50,13 @@ from security import (
 )
 
 router = APIRouter(prefix="/api/v1")
+logger = logging.getLogger("safewatch")
+
+
+def as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -77,8 +93,9 @@ manager = ConnectionManager()
 # AUTH
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.post("/auth/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
-async def register(body: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/auth/register", response_model=UserRegisterOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+async def register(request: Request, body: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -91,12 +108,20 @@ async def register(body: UserRegisterRequest, db: AsyncSession = Depends(get_db)
         api_token     = User.generate_api_token(),
     )
     db.add(user)
-    await db.flush()
-    return UserPublic.model_validate(user)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # FIX: closes the TOCTOU race between the SELECT check above and this
+        # INSERT — two concurrent registrations with the same email used to
+        # surface as an opaque 500 for the loser instead of a clean 409.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Email already registered")
+    return UserRegisterOut.model_validate(user)
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-async def login(body: UserLoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, body: UserLoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user   = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
@@ -106,7 +131,21 @@ async def login(body: UserLoginRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/auth/me", response_model=UserPublic)
 async def me(current_user: User = Depends(get_current_user)):
+    # FIX: no longer returns api_token here — see schemas.UserPublic docstring.
     return UserPublic.model_validate(current_user)
+
+
+@router.post("/auth/rotate-token", response_model=UserRegisterOut)
+@limiter.limit("3/minute")
+async def rotate_token(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a new edge-device API key and invalidate the old one immediately."""
+    current_user.api_token = User.generate_api_token()
+    await db.flush()
+    return UserRegisterOut.model_validate(current_user)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +157,9 @@ async def me(current_user: User = Depends(get_current_user)):
     response_model=TelemetryResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit("120/minute")
 async def ingest_event(
+    request : Request,
     body    : TelemetryIngest,
     facility: User         = Depends(get_facility_from_api_key),
     db      : AsyncSession = Depends(get_db),
@@ -153,6 +194,23 @@ async def ingest_event(
     })
 
     return TelemetryResponse(event_id=event.id, timestamp=event.timestamp)
+
+
+@router.post("/telemetry/heartbeat", response_model=HeartbeatResponse)
+@limiter.limit("60/minute")
+async def heartbeat(
+    request : Request,
+    body    : HeartbeatIngest,
+    facility: User = Depends(get_facility_from_api_key),
+):
+    """
+    Lightweight liveness ping an edge box can send on an interval (e.g. every
+    60s) so the cloud side can distinguish "camera offline" from "no falls
+    happened". Additive endpoint — existing edge deployments that never call
+    this keep working exactly as before.
+    """
+    logger.info("Heartbeat: facility=%s room=%s status=%s", facility.id, body.room_number, body.status)
+    return HeartbeatResponse(server_time=datetime.now(timezone.utc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,31 +299,51 @@ async def dashboard_aggregations(
     current_user: User         = Depends(get_current_user),
     db          : AsyncSession = Depends(get_db),
 ):
-    window_start = datetime.now(timezone.utc) - timedelta(hours=24)
+    window_start  = datetime.now(timezone.utc) - timedelta(hours=24)
+    active_window = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-    kpi = (await dashboard_kpi(current_user=current_user, db=db))
-
+    # FIX: the original implementation called dashboard_kpi() from in here,
+    # which re-ran 3 more queries on top of the ones below — every dashboard
+    # load paid for 24h of events twice. We already pull (timestamp,
+    # event_type, room_number) below, which is everything the KPI numbers
+    # need, so compute them in Python from the same result set instead of a
+    # second round-trip to the DB.
     rows = (await db.execute(
-        select(Event.timestamp, Event.event_type).where(
+        select(Event.timestamp, Event.event_type, Event.room_number).where(
             Event.user_id   == current_user.id,
             Event.timestamp >= window_start,
         )
     )).fetchall()
 
     hourly_map: dict[str, dict] = {}
-    for ts, etype in rows:
+    all_rooms: set[str] = set()
+    active_bed_exit_rooms: set[str] = set()
+    falls_24h = 0
+
+    for ts, etype, room in rows:
+        ts = as_utc(ts)
+        all_rooms.add(room)
         bucket = ts.strftime("%Y-%m-%dT%H:00")
         if bucket not in hourly_map:
             hourly_map[bucket] = {"falls": 0, "exits": 0}
         if etype == "FLOOR_FALL":
             hourly_map[bucket]["falls"] += 1
+            falls_24h += 1
         else:
             hourly_map[bucket]["exits"] += 1
+            if ts >= active_window:
+                active_bed_exit_rooms.add(room)
 
     hourly = [
         HourlyBucket(hour=h, falls=v["falls"], exits=v["exits"])
         for h, v in sorted(hourly_map.items())
     ]
+
+    kpi = KPIResponse(
+        active_protected_beds    = len(all_rooms),
+        total_falls_24h          = falls_24h,
+        active_bed_exit_warnings = len(active_bed_exit_rooms),
+    )
 
     fall_rows = (await db.execute(
         select(Event.kinematics).where(

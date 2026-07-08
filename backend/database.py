@@ -19,10 +19,19 @@ from models import Base
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine
 # ─────────────────────────────────────────────────────────────────────────────
-# Dev default: SQLite async   →  sqlite+aiosqlite:///./safewatch.db
-# Prod:        Postgres async →  postgresql+asyncpg://user:pass@host/db
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL", "sqlite+aiosqlite:///./safewatch.db"
+def normalize_database_url(url: str) -> str:
+    """Accept common hosted Postgres URLs and force the asyncpg SQLAlchemy driver."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+# Dev default: SQLite async   -> sqlite+aiosqlite:///./safewatch.db
+# Prod:        Postgres async -> postgresql+asyncpg://user:pass@host/db
+DATABASE_URL: str = normalize_database_url(
+    os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./safewatch.db")
 )
 
 # echo=False in production; flip to True for SQL debug logging

@@ -15,14 +15,16 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 class UserRegisterRequest(BaseModel):
     email         : EmailStr
-    password      : str = Field(min_length=8)
+    # FIX: cap at bcrypt's effective 72-byte limit so validation, not the
+    # hashing layer, is what rejects absurdly long input.
+    password      : str = Field(min_length=8, max_length=72)
     facility_name : str = Field(min_length=2, max_length=255)
     ward_unit     : Optional[str] = Field(default=None, max_length=128)
 
 
 class UserLoginRequest(BaseModel):
     email    : EmailStr
-    password : str
+    password : str = Field(max_length=72)
 
 
 class TokenResponse(BaseModel):
@@ -31,14 +33,24 @@ class TokenResponse(BaseModel):
 
 
 class UserPublic(BaseModel):
+    """
+    Safe-to-repeat-anywhere user profile. Deliberately does NOT include
+    `api_token` — that's a long-lived bearer credential for edge devices and
+    should not be re-emitted on every `/auth/me` call. See UserRegisterOut.
+    """
     id            : int
     email         : str
     facility_name : str
     ward_unit     : Optional[str]
-    api_token     : str            # shown once on registration; used by edge devices
     created_at    : datetime
 
     model_config = {"from_attributes": True}
+
+
+class UserRegisterOut(UserPublic):
+    """Returned once, at registration time, so the operator can copy the
+    edge-device API key. Never returned again after this."""
+    api_token: str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,17 +64,26 @@ class TelemetryIngest(BaseModel):
     storage and passes the resulting URL here (or omits it).
     """
     room_number       : str  = Field(max_length=32)
-    patient_track_id  : int
+    patient_track_id  : int  = Field(ge=0)
     event_type        : str  = Field(pattern=r"^(FLOOR_FALL|BED_EXIT)$")
-    kinematics        : Optional[str] = None
-    primary_impact    : Optional[str] = None
-    head_strike_risk  : Optional[str] = None
-    image_url         : Optional[str] = None
+    # FIX: unbounded free-text fields from an edge device are a cheap DoS
+    # vector (storage bloat + fan-out to every open dashboard WS connection).
+    kinematics        : Optional[str] = Field(default=None, max_length=256)
+    primary_impact    : Optional[str] = Field(default=None, max_length=64)
+    head_strike_risk  : Optional[str] = Field(default=None, max_length=32)
+    image_url         : Optional[str] = Field(default=None, max_length=2048)
 
     @field_validator("event_type")
     @classmethod
     def upper_event_type(cls, v: str) -> str:
         return v.upper()
+
+    @field_validator("image_url")
+    @classmethod
+    def image_url_scheme(cls, v: Optional[str]) -> Optional[str]:
+        if v and not (v.startswith("https://") or v.startswith("http://")):
+            raise ValueError("image_url must be an http(s) URL")
+        return v
 
 
 class TelemetryResponse(BaseModel):
@@ -71,6 +92,16 @@ class TelemetryResponse(BaseModel):
     timestamp : datetime
 
     model_config = {"from_attributes": True}
+
+
+class HeartbeatIngest(BaseModel):
+    room_number: str = Field(max_length=32)
+    status: str = Field(default="ONLINE", pattern=r"^(ONLINE|DEGRADED)$")
+
+
+class HeartbeatResponse(BaseModel):
+    status: str = "ack"
+    server_time: datetime
 
 
 # ─────────────────────────────────────────────────────────────────────────────

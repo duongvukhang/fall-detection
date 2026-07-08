@@ -1,7 +1,12 @@
-"""
-SafeWatch — Alembic initial migration
+"""SafeWatch — initial schema
+
 Creates the `users` and `stats` tables.
-Run: alembic upgrade head
+
+Revision ID: 0001_initial
+Revises:
+Create Date: (moved from backend/0001_initial.py into alembic/versions/ —
+see AUDIT_REPORT.md item #1: this file previously sat outside the alembic
+versions directory and was never actually discovered/run by Alembic.)
 """
 from alembic import op
 import sqlalchemy as sa

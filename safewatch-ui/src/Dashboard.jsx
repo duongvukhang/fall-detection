@@ -5,8 +5,17 @@ import {
 } from "recharts";
 
 // ── Point this at your deployed backend ─────────────────────────────────────
-const API    = import.meta.env.VITE_API_URL    || "https://YOUR_BACKEND_DOMAIN";
-const WS_URL = import.meta.env.VITE_WS_URL     || "wss://YOUR_BACKEND_DOMAIN";
+const API    = import.meta.env.VITE_API_URL    || "http://localhost:8000";
+const WS_URL = import.meta.env.VITE_WS_URL     || "ws://localhost:8000";
+
+// FIX: fail loudly in dev if the env vars were never set, instead of quietly
+// shipping a build that points at a literal placeholder domain.
+if (import.meta.env.PROD && (!import.meta.env.VITE_API_URL || !import.meta.env.VITE_WS_URL)) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[SafeWatch] VITE_API_URL / VITE_WS_URL are not set. Configure them in Vercel."
+  );
+}
 
 const PALETTE = {
   bg:      "#f8fafc", // Ultra-light slate background
@@ -25,6 +34,24 @@ const SHADOW = "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.
 const SHADOW_MD = "0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05)";
 const SHADOW_LG = "0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05)";
 
+// FIX: centralize "is this token still valid" so both the login flow and the
+// dashboard's own 401 handling agree, instead of trusting an unverified
+// atob() payload for anything beyond reading the (non-secret) `sub` claim.
+function decodeJwtPayload(token) {
+  try {
+    const [, payloadB64] = token.split(".");
+    return JSON.parse(atob(payloadB64));
+  } catch {
+    return null;
+  }
+}
+
+function isTokenExpired(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload?.exp) return true;
+  return Date.now() >= payload.exp * 1000;
+}
+
 // ─── Login ──────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [email,    setEmail]    = useState("");
@@ -42,8 +69,9 @@ function LoginScreen({ onLogin }) {
       });
       if (!res.ok) { setError("Invalid email or password."); setLoading(false); return; }
       const data = await res.json();
+      const payload = decodeJwtPayload(data.access_token);
+      if (!payload?.sub) { setError("Unexpected response from server."); setLoading(false); return; }
       localStorage.setItem("jwt", data.access_token);
-      const payload = JSON.parse(atob(data.access_token.split(".")[1]));
       localStorage.setItem("uid", payload.sub);
       onLogin();
     } catch {
@@ -68,9 +96,9 @@ function LoginScreen({ onLogin }) {
           <div style={{ fontSize:14, color:PALETTE.muted, marginTop:6 }}>Sign in to your dashboard</div>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-          <input style={inp} type="email" placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)} />
-          <input style={inp} type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
-          {error && <div style={{ color:PALETTE.accent, fontSize:13, fontWeight: 500 }}>{error}</div>}
+          <input aria-label="Email address" style={inp} type="email" placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)} />
+          <input aria-label="Password" style={inp} type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
+          {error && <div role="alert" style={{ color:PALETTE.accent, fontSize:13, fontWeight: 500 }}>{error}</div>}
           <button onClick={handleLogin} disabled={loading} style={{ background:PALETTE.text, border:"none", borderRadius:8, color:"#fff", padding:"12px", fontSize:14, fontWeight:600, cursor:loading?"default":"pointer", opacity:loading?0.7:1, transition:"opacity 0.2s" }}>
             {loading ? "Signing in…" : "Sign In"}
           </button>
@@ -118,7 +146,7 @@ function ImageModal({ url, onClose }) {
       <div onClick={e=>e.stopPropagation()} style={{ background:PALETTE.surface, borderRadius:16, overflow:"hidden", maxWidth:720, width:"90%", boxShadow: SHADOW_LG }}>
         <div style={{ padding:"16px 20px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <span style={{ color:PALETTE.text, fontWeight:600, fontSize:15 }}>Verification Photo</span>
-          <button onClick={onClose} style={{ background:"none", border:"none", color:PALETTE.muted, fontSize:24, cursor:"pointer", lineHeight:1 }}>×</button>
+          <button aria-label="Close verification photo" onClick={onClose} style={{ background:"none", border:"none", color:PALETTE.muted, fontSize:24, cursor:"pointer", lineHeight:1 }}>×</button>
         </div>
         <img src={url} alt="Event frame" style={{ width:"100%", display:"block" }} />
       </div>
@@ -155,7 +183,7 @@ function Toast({ event, onDismiss }) {
   const borderLeftColor = isFall ? PALETTE.accent : PALETTE.warn;
   
   return (
-    <div style={{
+    <div role="status" style={{
       position:"fixed", bottom:24, right:24, zIndex:200,
       background: PALETTE.surface, color: PALETTE.text, borderRadius:12, padding:"20px", minWidth:320,
       boxShadow:"0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1)", 
@@ -168,7 +196,7 @@ function Toast({ event, onDismiss }) {
       </div>
       <div style={{ fontSize:13, color: PALETTE.muted }}>Room {event.room_number} · Track #{event.patient_track_id}</div>
       {event.kinematics && <div style={{ fontSize:12, color: PALETTE.muted, marginTop:6, fontStyle: "italic" }}>{event.kinematics}</div>}
-      <button onClick={onDismiss} style={{ position:"absolute", top:14, right:14, background:"none", border:"none", color:PALETTE.muted, fontSize:20, cursor:"pointer", opacity:0.7 }}>×</button>
+      <button aria-label="Dismiss notification" onClick={onDismiss} style={{ position:"absolute", top:14, right:14, background:"none", border:"none", color:PALETTE.muted, fontSize:20, cursor:"pointer", opacity:0.7 }}>×</button>
     </div>
   );
 }
@@ -191,16 +219,22 @@ function Dashboard({ onLogout }) {
   const mono = { fontFamily:"'JetBrains Mono','Fira Code',monospace" };
 
   const refresh = useCallback(async () => {
+    // FIX: proactively log out on an expired token instead of firing three
+    // API calls that will all 401.
+    const token = localStorage.getItem("jwt");
+    if (!token || isTokenExpired(token)) { onLogout(); return; }
+
     setLoading(true); setError("");
     try {
-      const token   = localStorage.getItem("jwt");
       const headers = { Authorization: `Bearer ${token}` };
       const [kpiRes, aggRes, evtRes] = await Promise.all([
         fetch(`${API}/api/v1/dashboard/kpi`,             { headers }),
         fetch(`${API}/api/v1/dashboard/aggregations`,    { headers }),
         fetch(`${API}/api/v1/dashboard/events?limit=50`, { headers }),
       ]);
-      if (kpiRes.status === 401) { onLogout(); return; }
+      if (kpiRes.status === 401 || aggRes.status === 401 || evtRes.status === 401) { onLogout(); return; }
+      if (!kpiRes.ok || !aggRes.ok || !evtRes.ok) { setError("The server returned an unexpected response."); setLoading(false); return; }
+
       setKpi(await kpiRes.json());
       const agg = await aggRes.json();
       setHourly(agg.hourly        ?? []);
@@ -217,16 +251,27 @@ function Dashboard({ onLogout }) {
   useEffect(() => {
     const token = localStorage.getItem("jwt");
     const uid   = localStorage.getItem("uid");
-    if (!token || !uid) return;
+    if (!token || !uid || isTokenExpired(token)) { onLogout(); return; }
 
     let ws;
     let reconnectTimer;
+    // FIX: exponential backoff (1s -> 30s cap) with a touch of jitter instead
+    // of a fixed 5s retry, so a backend restart doesn't cause every connected
+    // dashboard tab to hammer it back open at the same instant.
+    let attempt = 0;
+
+    function scheduleReconnect() {
+      attempt += 1;
+      const base  = Math.min(30000, 1000 * 2 ** (attempt - 1));
+      const delay = base / 2 + Math.random() * (base / 2);
+      reconnectTimer = setTimeout(connect, delay);
+    }
 
     function connect() {
       ws = new WebSocket(`${WS_URL}/api/v1/ws/${uid}?token=${token}`);
       wsRef.current = ws;
 
-      ws.onopen = () => { setWsConnected(true); };
+      ws.onopen = () => { setWsConnected(true); attempt = 0; };
       ws.onmessage = (msg) => {
         try {
           const data = JSON.parse(msg.data);
@@ -261,14 +306,20 @@ function Dashboard({ onLogout }) {
 
       ws.onclose = () => {
         setWsConnected(false);
-        reconnectTimer = setTimeout(connect, 5000);
+        if (wsRef.current === ws) scheduleReconnect();
       };
       ws.onerror = () => ws.close();
     }
 
     connect();
-    return () => { clearTimeout(reconnectTimer); ws?.close(); };
-  }, []);
+    return () => {
+      clearTimeout(reconnectTimer);
+      wsRef.current = null;
+      if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+        ws.close();
+      }
+    };
+  }, [onLogout]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -295,7 +346,7 @@ function Dashboard({ onLogout }) {
         </div>
       </div>
 
-      {error && <div style={{ background:"#fef2f2", border:`1px solid #fecaca`, borderRadius:8, padding:"12px 16px", marginBottom:24, fontSize:13, color:PALETTE.accent, fontWeight:500 }}>⚠️ {error}</div>}
+      {error && <div role="alert" style={{ background:"#fef2f2", border:`1px solid #fecaca`, borderRadius:8, padding:"12px 16px", marginBottom:24, fontSize:13, color:PALETTE.accent, fontWeight:500 }}>⚠️ {error}</div>}
 
       {/* KPI Row */}
       <div style={{ display:"flex", gap:24, marginBottom:32, flexWrap:"wrap" }}>
@@ -388,7 +439,7 @@ function Dashboard({ onLogout }) {
                       <td style={{ padding:"14px 24px", color:PALETTE.muted, fontWeight:500 }}>{e.head_strike_risk||"—"}</td>
                       <td style={{ padding:"14px 24px" }}>
                         {e.image_url
-                          ? <button onClick={()=>setModal(e.image_url)} style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, color:PALETTE.text, borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:12, fontWeight:600, boxShadow: SHADOW }}>View</button>
+                          ? <button aria-label={`View verification photo for event ${e.id ?? idx}`} onClick={()=>setModal(e.image_url)} style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, color:PALETTE.text, borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:12, fontWeight:600, boxShadow: SHADOW }}>View</button>
                           : <span style={{ color:PALETTE.border }}>—</span>
                         }
                       </td>
@@ -409,7 +460,10 @@ function Dashboard({ onLogout }) {
 
 // ─── App root ────────────────────────────────────────────────────────────────
 export default function App() {
-  const [loggedIn, setLoggedIn] = useState(!!localStorage.getItem("jwt"));
+  const [loggedIn, setLoggedIn] = useState(() => {
+    const token = localStorage.getItem("jwt");
+    return !!token && !isTokenExpired(token);
+  });
   function handleLogout() { localStorage.removeItem("jwt"); localStorage.removeItem("uid"); setLoggedIn(false); }
   return loggedIn
     ? <Dashboard onLogout={handleLogout} />

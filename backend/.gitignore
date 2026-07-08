@@ -1,2 +1,5 @@
 backend/safewatch.db
-__pycatche__
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

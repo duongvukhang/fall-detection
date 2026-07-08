@@ -4,14 +4,10 @@ Two-table multi-tenant schema: users → stats (CASCADE)
 """
 
 import secrets
-import hashlib
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from sqlalchemy import (
-    String, Integer, Text, DateTime, ForeignKey,
-    UniqueConstraint, Index, event
-)
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship
 )
@@ -95,6 +91,7 @@ class Event(Base):
         Index("ix_stats_user_id",   "user_id"),
         Index("ix_stats_timestamp", "timestamp"),
         Index("ix_stats_event_type","event_type"),
+        Index("ix_stats_user_type_ts", "user_id", "event_type", "timestamp"),
     )
 
     def __repr__(self) -> str:

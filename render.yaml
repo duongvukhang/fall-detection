@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: safewatch-api
+    env: docker
+    rootDir: backend
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENV
+        value: production
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: JWT_TTL_MINUTES
+        value: "1440"
