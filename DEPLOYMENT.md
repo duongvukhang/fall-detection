@@ -9,15 +9,17 @@ Target architecture:
 
 ## 1. Supabase
 
-Create a Supabase project and copy the pooler connection string. Use the transaction pooler URL on port `6543` for Render unless you know you need a direct database connection.
+Create a Supabase project and copy the pooler connection string. Use the pooler URL for Render, not the direct `db.<project-ref>.supabase.co:5432` URL. The direct URL can fail from Render with `OSError: [Errno 101] Network is unreachable` because some Supabase direct database hosts require IPv6 reachability.
 
 Set Render `DATABASE_URL` to the Supabase URL. The backend accepts either `postgresql://`, `postgres://`, or `postgresql+asyncpg://` and normalizes it for SQLAlchemy async.
 
-Recommended shape:
+Recommended pooler shape:
 
 ```text
 postgresql+asyncpg://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres?ssl=require
 ```
+
+If Supabase shows both transaction and session pooler strings, start with the session pooler for this app. If your password contains special characters such as `@`, `#`, `/`, `?`, or `:`, URL-encode them before putting the password in `DATABASE_URL`.
 
 Do not manually create tables in Supabase. Render runs `alembic -c alembic.ini upgrade head` before starting the API.
 
