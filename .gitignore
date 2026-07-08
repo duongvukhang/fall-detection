@@ -1,3 +1,23 @@
+# Secrets / local environment
 .env
-node_modules
+.env.*
+!.env.example
+backend/.env
+safewatch-ui/.env
+edge/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+
+# Local databases and OS files
 safewatch.db
+backend/safewatch.db
+.DS_Store
