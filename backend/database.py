@@ -1,5 +1,5 @@
 """
-SafeWatch — Database Engine & Session Management
+The AI Guards — Database Engine & Session Management
 Async SQLAlchemy 2.x with SQLite (dev) / PostgreSQL (prod) support.
 Switch DATABASE_URL in .env to move between environments.
 """
@@ -28,10 +28,10 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-# Dev default: SQLite async   -> sqlite+aiosqlite:///./safewatch.db
+# Dev default: SQLite async   -> sqlite+aiosqlite:///./the_ai_guards.db
 # Prod:        Postgres async -> postgresql+asyncpg://user:pass@host/db
 DATABASE_URL: str = normalize_database_url(
-    os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./safewatch.db")
+    os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./the_ai_guards.db")
 )
 
 # echo=False in production; flip to True for SQL debug logging

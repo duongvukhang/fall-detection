@@ -2,3 +2,4 @@ numpy
 requests
 opencv-python
 ultralytics
+websocket-client

@@ -1,5 +1,5 @@
 """
-SafeWatch — FastAPI Application Entrypoint
+The AI Guards — FastAPI Application Entrypoint
 Run dev:  uvicorn main:app --reload --port 8000
 Run prod: uvicorn main:app --host 0.0.0.0 --port 8000 --workers $WEB_CONCURRENCY
 """
@@ -24,14 +24,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
-logger = logging.getLogger("safewatch")
+logger = logging.getLogger("the_ai_guards")
 
 ENV = os.getenv("ENV", "development").lower()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("SafeWatch API starting (env=%s)", ENV)
+    logger.info("The AI Guards API starting (env=%s)", ENV)
     if ENV == "production":
         logger.info("Production mode: expecting Alembic migrations to have run before startup.")
     else:
@@ -39,11 +39,11 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info("Database ready.")
     yield
-    logger.info("SafeWatch API shutting down.")
+    logger.info("The AI Guards API shutting down.")
 
 
 # ── Allowed origins: set ALLOWED_ORIGINS in .env (comma-separated) ──────────
-# Example: ALLOWED_ORIGINS=https://safewatch.yourdomain.com,https://www.yourdomain.com
+# Example: ALLOWED_ORIGINS=https://the-ai-guards.yourdomain.com,https://www.yourdomain.com
 #
 # FIX: a bare "*" combined with allow_credentials=True is both insecure and
 # non-functional per the Fetch spec (browsers reject it). Rather than silently
@@ -72,7 +72,7 @@ else:
     ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app = FastAPI(
-    title       = "SafeWatch Cloud API",
+    title       = "The AI Guards Cloud API",
     description = "Edge-to-Cloud fall & bed-exit detection SaaS — multi-tenant",
     version     = "1.0.0",
     lifespan    = lifespan,
@@ -127,4 +127,4 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "safewatch-api"}
+    return {"status": "ok", "service": "the-ai-guards-api"}

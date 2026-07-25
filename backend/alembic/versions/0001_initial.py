@@ -1,4 +1,4 @@
-"""SafeWatch — initial schema
+"""The AI Guards — initial schema
 
 Creates the `users` and `stats` tables.
 

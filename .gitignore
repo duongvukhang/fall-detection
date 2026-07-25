@@ -20,4 +20,6 @@ dist-ssr/
 # Local databases and OS files
 safewatch.db
 backend/safewatch.db
+the_ai_guards.db
+backend/the_ai_guards.db
 .DS_Store

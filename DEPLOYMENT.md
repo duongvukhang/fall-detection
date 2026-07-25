@@ -1,4 +1,4 @@
-# SafeWatch Deployment Checklist
+# The AI Guards Deployment Checklist
 
 Target architecture:
 
@@ -89,33 +89,33 @@ Authorization: Bearer <dashboard JWT>
 Copy the `edge` folder and `edge/yolov8n-pose.pt` to:
 
 ```text
-/opt/safewatch
+/opt/the-ai-guards
 ```
 
-Create `/etc/safewatch-edge.env` from `edge/.env.example`:
+Create `/etc/the-ai-guards-edge.env` from `edge/.env.example`:
 
 ```text
 CLOUD_API_URL=https://your-render-service.onrender.com
 EDGE_API_KEY=api_token_from_registration
 ROOM_NUMBER=ROOM-01
-YOLO_MODEL=/opt/safewatch/yolov8n-pose.pt
-PENDING_QUEUE_PATH=/var/lib/safewatch-edge/pending_events.jsonl
+YOLO_MODEL=/opt/the-ai-guards/yolov8n-pose.pt
+PENDING_QUEUE_PATH=/var/lib/the-ai-guards-edge/pending_events.jsonl
 ```
 
 Install Python dependencies in a virtualenv. On Jetson, prefer NVIDIA/JetPack-compatible PyTorch and OpenCV wheels if `pip install ultralytics` tries to replace them.
 
 ```text
-python3 -m venv /opt/safewatch/venv
-/opt/safewatch/venv/bin/pip install -r /opt/safewatch/requirements.txt
+python3 -m venv /opt/the-ai-guards/venv
+/opt/the-ai-guards/venv/bin/pip install -r /opt/the-ai-guards/requirements.txt
 ```
 
 Install the service:
 
 ```text
-sudo cp /opt/safewatch/safewatch-edge.service /etc/systemd/system/
+sudo cp /opt/the-ai-guards/the-ai-guards-edge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now safewatch-edge
-sudo journalctl -u safewatch-edge -f
+sudo systemctl enable --now the-ai-guards-edge
+sudo journalctl -u the-ai-guards-edge -f
 ```
 
 Use `--source csi` for the Jetson CSI camera, or change the service to `--source 0` for a USB camera.

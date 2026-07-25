@@ -3,7 +3,8 @@ SafeWatch — API Route Handlers
   /api/v1/auth/*         — registration, login
   /api/v1/telemetry/*    — edge-device ingest (X-API-KEY)
   /api/v1/dashboard/*    — KPIs, charts, audit trail (JWT)
-  /api/v1/ws/{user_id}   — WebSocket real-time push
+  /api/v1/ws/{user_id}   — WebSocket real-time push (dashboard, JWT)
+  /api/v1/ws/edge/stream — WebSocket live-camera ingest (edge device, X-API-KEY)
 """
 
 from datetime import datetime, timedelta, timezone
@@ -111,7 +112,7 @@ async def register(request: Request, body: UserRegisterRequest, db: AsyncSession
     try:
         await db.flush()
     except IntegrityError:
-        # FIX: closes the TOCTOU race between the SELECT check above and this
+        # Closes the TOCTOU race between the SELECT check above and this
         # INSERT — two concurrent registrations with the same email used to
         # surface as an opaque 500 for the loser instead of a clean 409.
         await db.rollback()
@@ -131,7 +132,7 @@ async def login(request: Request, body: UserLoginRequest, db: AsyncSession = Dep
 
 @router.get("/auth/me", response_model=UserPublic)
 async def me(current_user: User = Depends(get_current_user)):
-    # FIX: no longer returns api_token here — see schemas.UserPublic docstring.
+    # Does not return api_token here — see schemas.UserPublic docstring.
     return UserPublic.model_validate(current_user)
 
 
@@ -214,7 +215,90 @@ async def heartbeat(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# WEBSOCKET  (dashboard real-time feed)
+# LIVE CAMERA — edge device pushes JPEG frames, relayed to dashboard sockets
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Hard cap on a single frame's base64 payload (~450KB decoded, generous for a
+# 640x480 JPEG at moderate quality). Guards against a misbehaving/compromised
+# device flooding memory or every open dashboard tab's WS buffer.
+MAX_FRAME_B64_CHARS = 600_000
+
+
+async def _authenticate_edge_ws(ws: WebSocket, db: AsyncSession) -> User | None:
+    """
+    Same credential (X-API-KEY) and lookup as the HTTP telemetry routes, just
+    read from the WebSocket handshake instead of a FastAPI Security() header
+    dependency (python `websocket-client`, used by the edge script, supports
+    setting arbitrary handshake headers; browsers cannot, which is why this
+    route is edge-only and the dashboard route below uses a JWT query param
+    instead).
+    """
+    api_key = ws.headers.get("x-api-key") or ws.query_params.get("api_key")
+    if not api_key:
+        return None
+    result = await db.execute(select(User).where(User.api_token == api_key))
+    return result.scalar_one_or_none()
+
+
+@router.websocket("/ws/edge/stream")
+async def edge_stream_endpoint(
+    ws: WebSocket,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Live-camera ingest. An edge device connects with its X-API-KEY (header,
+    or ?api_key= as a fallback for clients that can't set custom WS headers)
+    and a `?room=ROOM-01` query param, then sends a stream of JSON text
+    frames: {"room": "...", "jpeg_b64": "..."}.
+
+    Each frame is relayed verbatim (wrapped as a "FRAME" message) to every
+    dashboard WebSocket for that tenant via the same ConnectionManager the
+    fall/bed-exit events already use — no separate fan-out path to maintain.
+    """
+    facility = await _authenticate_edge_ws(ws, db)
+    if facility is None:
+        # Mirrors the dashboard socket below: reject before accept() so an
+        # invalid/rotated API key never gets a live connection.
+        await ws.close(code=4003)
+        return
+
+    room = ws.query_params.get("room", "UNKNOWN")
+    await ws.accept()
+    logger.info("Edge camera connected: facility=%s room=%s", facility.id, room)
+    await manager.push(facility.id, {"type": "CAMERA_ONLINE", "room": room})
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            if len(raw) > MAX_FRAME_B64_CHARS:
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            jpeg_b64 = msg.get("jpeg_b64")
+            if not isinstance(jpeg_b64, str) or not jpeg_b64:
+                continue
+
+            frame_room = msg.get("room") or room
+            await manager.push(facility.id, {
+                "type"     : "FRAME",
+                "room"     : frame_room,
+                "jpeg_b64" : jpeg_b64,
+                "ts"       : datetime.now(timezone.utc).isoformat(),
+            })
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("Edge camera stream error: facility=%s room=%s", facility.id, room)
+    finally:
+        logger.info("Edge camera disconnected: facility=%s room=%s", facility.id, room)
+        await manager.push(facility.id, {"type": "CAMERA_OFFLINE", "room": room})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEBSOCKET  (dashboard real-time feed — events + live frames)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{user_id}")
@@ -228,6 +312,8 @@ async def websocket_endpoint(
     Authenticated WebSocket.
     Connect: wss://your-domain/api/v1/ws/{user_id}?token=<JWT>
     Messages pushed: { type: "NEW_EVENT", event: {...} }
+                     { type: "FRAME", room, jpeg_b64, ts }
+                     { type: "CAMERA_ONLINE" | "CAMERA_OFFLINE", room }
                      { type: "PING" }  ← keepalive every 25 s
     """
     # Validate JWT before accepting
@@ -302,12 +388,8 @@ async def dashboard_aggregations(
     window_start  = datetime.now(timezone.utc) - timedelta(hours=24)
     active_window = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-    # FIX: the original implementation called dashboard_kpi() from in here,
-    # which re-ran 3 more queries on top of the ones below — every dashboard
-    # load paid for 24h of events twice. We already pull (timestamp,
-    # event_type, room_number) below, which is everything the KPI numbers
-    # need, so compute them in Python from the same result set instead of a
-    # second round-trip to the DB.
+    # Computed from a single query result set (not a second round-trip to the
+    # DB) — see dashboard_kpi() above for the equivalent standalone version.
     rows = (await db.execute(
         select(Event.timestamp, Event.event_type, Event.room_number).where(
             Event.user_id   == current_user.id,

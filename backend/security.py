@@ -1,5 +1,5 @@
 """
-SafeWatch — Security Utilities
+The AI Guards — Security Utilities
 Password hashing (bcrypt), JWT bearer tokens, API-key extraction.
 """
 

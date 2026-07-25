@@ -1,0 +1,17 @@
+[Unit]
+Description=The AI Guards Jetson Nano edge detector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/the-ai-guards
+EnvironmentFile=/etc/the-ai-guards-edge.env
+ExecStart=/opt/the-ai-guards/venv/bin/python /opt/the-ai-guards/edge_detector.py --source csi --room ${ROOM_NUMBER} --api-url ${CLOUD_API_URL} --api-key ${EDGE_API_KEY} --model ${YOLO_MODEL} --no-display
+Restart=always
+RestartSec=10
+User=ai-guards
+Group=ai-guards
+
+[Install]
+WantedBy=multi-user.target

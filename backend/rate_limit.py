@@ -1,5 +1,5 @@
 """
-SafeWatch — shared slowapi Limiter instance.
+The AI Guards — shared slowapi Limiter instance.
 
 FIX: main.py and routes.py each need a reference to the *same* Limiter
 (slowapi enforces via `request.app.state.limiter`, and `@limiter.limit(...)`

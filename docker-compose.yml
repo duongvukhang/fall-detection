@@ -7,13 +7,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER:     safewatch
+      POSTGRES_USER:     ai_guards
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB:       safewatch
+      POSTGRES_DB:       ai_guards
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U safewatch"]
+      test: ["CMD-SHELL", "pg_isready -U ai_guards"]
       interval: 10s
       retries: 5
 
@@ -27,7 +27,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL:    postgresql+asyncpg://safewatch:${POSTGRES_PASSWORD}@db:5432/safewatch
+      DATABASE_URL:    postgresql+asyncpg://ai_guards:${POSTGRES_PASSWORD}@db:5432/ai_guards
       JWT_SECRET_KEY:  ${JWT_SECRET_KEY}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       ENV:             production

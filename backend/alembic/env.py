@@ -1,5 +1,5 @@
 """
-SafeWatch — Alembic environment.
+The AI Guards — Alembic environment.
 
 FIX: this file (and alembic.ini / versions/) did not exist in the original
 repo, even though `backend/0001_initial.py` referenced `alembic upgrade
@@ -42,7 +42,7 @@ def normalize_database_url(url: str) -> str:
 
 
 def get_url() -> str:
-    return normalize_database_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./safewatch.db"))
+    return normalize_database_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./the_ai_guards.db"))
 
 
 def run_migrations_offline() -> None:

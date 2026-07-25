@@ -8,7 +8,7 @@ import {
 const API    = import.meta.env.VITE_API_URL    || "http://localhost:8000";
 const WS_URL = import.meta.env.VITE_WS_URL     || "ws://localhost:8000";
 
-// FIX: fail loudly in dev if the env vars were never set, instead of quietly
+// Fail loudly in dev if the env vars were never set, instead of quietly
 // shipping a build that points at a literal placeholder domain.
 if (import.meta.env.PROD && (!import.meta.env.VITE_API_URL || !import.meta.env.VITE_WS_URL)) {
   // eslint-disable-next-line no-console
@@ -16,6 +16,10 @@ if (import.meta.env.PROD && (!import.meta.env.VITE_API_URL || !import.meta.env.V
     "[SafeWatch] VITE_API_URL / VITE_WS_URL are not set. Configure them in Vercel."
   );
 }
+
+// A live camera frame is considered stale (edge device likely offline or the
+// network hiccuped) if none has arrived in this long.
+const LIVE_FRAME_STALE_MS = 8000;
 
 const PALETTE = {
   bg:      "#f8fafc", // Ultra-light slate background
@@ -34,7 +38,7 @@ const SHADOW = "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.
 const SHADOW_MD = "0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05)";
 const SHADOW_LG = "0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05)";
 
-// FIX: centralize "is this token still valid" so both the login flow and the
+// Centralize "is this token still valid" so both the login flow and the
 // dashboard's own 401 handling agree, instead of trusting an unverified
 // atob() payload for anything beyond reading the (non-secret) `sub` claim.
 function decodeJwtPayload(token) {
@@ -201,6 +205,85 @@ function Toast({ event, onDismiss }) {
   );
 }
 
+// ─── Live Camera panel ───────────────────────────────────────────────────────
+// Renders whichever room's most recent JPEG frame arrived over the WS as a
+// plain <img>. Frames are relayed by the backend from the Jetson's own
+// WebSocket connection (see backend/routes.py: /ws/edge/stream), so this
+// panel only ever deals with data already flowing through the dashboard's
+// existing socket — no extra connection to manage here.
+function LiveCameraPanel({ liveFrames, cameraStatus }) {
+  const rooms = Array.from(new Set([...Object.keys(liveFrames), ...Object.keys(cameraStatus)])).sort();
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    if ((!selectedRoom || !rooms.includes(selectedRoom)) && rooms.length > 0) {
+      setSelectedRoom(rooms[0]);
+    }
+  }, [rooms, selectedRoom]);
+
+  // Re-render every couple seconds purely so the "stale" check below (based
+  // on wall-clock time since the last frame) stays accurate even when no new
+  // frames are arriving.
+  useEffect(() => {
+    const t = setInterval(() => forceTick(n => n + 1), 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  const current = selectedRoom ? liveFrames[selectedRoom] : null;
+  const status  = selectedRoom ? cameraStatus[selectedRoom] : null;
+  const isStale = current ? (Date.now() - current.receivedAt) > LIVE_FRAME_STALE_MS : true;
+  const isLive  = status === "online" && current && !isStale;
+
+  return (
+    <div style={{ background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, overflow:"hidden", boxShadow: SHADOW }}>
+      <div style={{ padding:"20px 24px", borderBottom:`1px solid ${PALETTE.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:12 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:15, fontWeight:700, letterSpacing:"-0.01em" }}>Live Camera</span>
+          <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12, fontWeight:600, color: isLive ? PALETTE.accent : PALETTE.muted }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background: isLive ? PALETTE.accent : PALETTE.border, display:"inline-block", animation: isLive ? "pulse 1.4s ease-in-out infinite" : "none" }} />
+            {isLive ? "LIVE" : status === "online" ? "Reconnecting…" : "Offline"}
+          </span>
+        </div>
+        {rooms.length > 1 && (
+          <select
+            aria-label="Select room"
+            value={selectedRoom || ""}
+            onChange={e => setSelectedRoom(e.target.value)}
+            style={{ background:PALETTE.bg, border:`1px solid ${PALETTE.border}`, borderRadius:8, padding:"6px 10px", fontSize:13, color:PALETTE.text }}
+          >
+            {rooms.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{ position:"relative", background:"#0f172a", aspectRatio:"4 / 3", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        {current && !isStale
+          ? <img
+              src={`data:image/jpeg;base64,${current.jpeg_b64}`}
+              alt={`Live feed — ${selectedRoom}`}
+              style={{ width:"100%", height:"100%", objectFit:"contain", display:"block" }}
+            />
+          : (
+            <div style={{ color:"#94a3b8", fontSize:13, textAlign:"center", padding:24 }}>
+              {rooms.length === 0
+                ? "No camera has connected yet."
+                : status === "online"
+                  ? "Waiting for the next frame…"
+                  : "Camera is offline."}
+            </div>
+          )
+        }
+        {selectedRoom && (
+          <div style={{ position:"absolute", top:12, left:12, background:"rgba(15,23,42,0.6)", color:"#fff", fontSize:12, fontWeight:600, padding:"4px 10px", borderRadius:6 }}>
+            {selectedRoom}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ──────────────────────────────────────────────────────────
 function Dashboard({ onLogout }) {
   const [kpi,         setKpi]         = useState({ active_protected_beds:0, total_falls_24h:0, active_bed_exit_warnings:0 });
@@ -214,13 +297,15 @@ function Dashboard({ onLogout }) {
   const [wsConnected, setWsConnected] = useState(false);
   const [toast,       setToast]       = useState(null);
   const [flashKpi,    setFlashKpi]    = useState(false);
+  const [liveFrames,  setLiveFrames]  = useState({});   // { [room]: { jpeg_b64, ts, receivedAt } }
+  const [cameraStatus,setCameraStatus]= useState({});   // { [room]: "online" | "offline" }
   const wsRef = useRef(null);
 
   const mono = { fontFamily:"'JetBrains Mono','Fira Code',monospace" };
 
   const refresh = useCallback(async () => {
-    // FIX: proactively log out on an expired token instead of firing three
-    // API calls that will all 401.
+    // Proactively log out on an expired token instead of firing three API
+    // calls that will all 401.
     const token = localStorage.getItem("jwt");
     if (!token || isTokenExpired(token)) { onLogout(); return; }
 
@@ -255,8 +340,8 @@ function Dashboard({ onLogout }) {
 
     let ws;
     let reconnectTimer;
-    // FIX: exponential backoff (1s -> 30s cap) with a touch of jitter instead
-    // of a fixed 5s retry, so a backend restart doesn't cause every connected
+    // Exponential backoff (1s -> 30s cap) with a touch of jitter instead of a
+    // fixed 5s retry, so a backend restart doesn't cause every connected
     // dashboard tab to hammer it back open at the same instant.
     let attempt = 0;
 
@@ -276,6 +361,25 @@ function Dashboard({ onLogout }) {
         try {
           const data = JSON.parse(msg.data);
           if (data.type === "PING") return;
+
+          if (data.type === "FRAME") {
+            setLiveFrames(prev => ({
+              ...prev,
+              [data.room]: { jpeg_b64: data.jpeg_b64, ts: data.ts, receivedAt: Date.now() },
+            }));
+            setCameraStatus(prev => ({ ...prev, [data.room]: "online" }));
+            return;
+          }
+
+          if (data.type === "CAMERA_ONLINE") {
+            setCameraStatus(prev => ({ ...prev, [data.room]: "online" }));
+            return;
+          }
+
+          if (data.type === "CAMERA_OFFLINE") {
+            setCameraStatus(prev => ({ ...prev, [data.room]: "offline" }));
+            return;
+          }
 
           if (data.type === "NEW_EVENT") {
             const ev = data.event;
@@ -325,7 +429,10 @@ function Dashboard({ onLogout }) {
 
   return (
     <div style={{ fontFamily:"'Inter',sans-serif", background:PALETTE.bg, minHeight:"100vh", color:PALETTE.text, padding:"40px 48px" }}>
-      <style>{`@keyframes slideIn { from { transform: translateY(20px); opacity:0; } to { transform: translateY(0); opacity:1; } }`}</style>
+      <style>{`
+        @keyframes slideIn { from { transform: translateY(20px); opacity:0; } to { transform: translateY(0); opacity:1; } }
+        @keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:0.35; } }
+      `}</style>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:40 }}>
@@ -355,8 +462,12 @@ function Dashboard({ onLogout }) {
         <KPICard label="Active Bed Exits"         value={kpi.active_bed_exit_warnings} color={PALETTE.warn}    flash={flashKpi} />
       </div>
 
-      {/* Charts Row */}
+      {/* Live Camera + Charts Row */}
       <div style={{ display:"flex", gap:24, marginBottom:32, flexWrap:"wrap" }}>
+        <div style={{ flex:1, minWidth:320, maxWidth:480 }}>
+          <LiveCameraPanel liveFrames={liveFrames} cameraStatus={cameraStatus} />
+        </div>
+
         <div style={{ flex:2, minWidth:400, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"24px", boxShadow: SHADOW }}>
           <div style={{ fontSize:15, fontWeight:700, marginBottom:24, letterSpacing: "-0.01em" }}>Hourly Incident Distribution</div>
           {hourly.length === 0
@@ -381,7 +492,10 @@ function Dashboard({ onLogout }) {
             ))}
           </div>
         </div>
+      </div>
 
+      {/* Fall Typology */}
+      <div style={{ display:"flex", gap:24, marginBottom:32, flexWrap:"wrap" }}>
         <div style={{ flex:1, minWidth:280, background:PALETTE.surface, border:`1px solid ${PALETTE.border}`, borderRadius:12, padding:"24px", boxShadow: SHADOW }}>
           <div style={{ fontSize:15, fontWeight:700, marginBottom:16, letterSpacing: "-0.01em" }}>Fall Typology</div>
           {typology.length === 0

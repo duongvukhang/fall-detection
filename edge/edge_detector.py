@@ -2,7 +2,7 @@
 SafeWatch Edge — YOLOv8n-pose Fall & Bed-Exit Detector
 =======================================================
 Requirements:
-    pip install ultralytics requests numpy opencv-python
+    pip install ultralytics requests numpy opencv-python websocket-client
 
 Usage:
     python edge_detector.py --source 0 --room "ROOM-01" \
@@ -15,6 +15,10 @@ Usage:
     # Video file:
     python edge_detector.py --source /path/to/video.mp4 --room "ROOM-01" \
         --api-url http://localhost:8000 --api-key YOUR_TOKEN
+
+    # Disable the live camera feed on the dashboard (events/heartbeat still sent):
+    python edge_detector.py --source csi --room "ROOM-01" \
+        --api-url http://localhost:8000 --api-key YOUR_TOKEN --no-stream
 
 AUDIT-HARDENING CHANGES (see AUDIT_REPORT.md #16-18):
   - Telemetry POSTs now go through a shared requests.Session with a
@@ -30,11 +34,26 @@ AUDIT-HARDENING CHANGES (see AUDIT_REPORT.md #16-18):
   - Optional heartbeat ping every 60s so the cloud side can tell "camera
     offline" apart from "no falls happened". Degrades gracefully (a 404 from
     an older backend is treated as informational, not fatal).
+
+LIVE CAMERA FEED:
+  - A dedicated background thread (LiveStreamer) owns its own WebSocket
+    connection to /api/v1/ws/edge/stream and pushes the most recently
+    processed (annotated) frame as a JPEG at a throttled rate (default 6
+    fps). It intentionally only ever holds the *latest* frame — if the
+    network is slow it drops frames rather than buffering and falling
+    behind, which is the right tradeoff for a "what's happening right now"
+    view (unlike incident events, a dropped preview frame is not a
+    patient-safety gap, so it does not use the on-disk retry queue).
+  - The main detection loop is completely decoupled from network I/O for
+    this: it just calls `streamer.submit_frame(frame)` once per processed
+    frame and moves on immediately.
 """
 
 import argparse
+import base64
 import json
 import os
+import random
 import threading
 import time
 from collections import deque
@@ -51,6 +70,11 @@ try:
     from urllib3.util.retry import Retry
 except ImportError:  # pragma: no cover - requests vendors urllib3 on some installs
     from requests.packages.urllib3.util.retry import Retry
+
+try:
+    import websocket  # from the `websocket-client` package
+except ImportError:
+    websocket = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -82,6 +106,11 @@ PENDING_QUEUE_PATH   = Path(os.getenv("PENDING_QUEUE_PATH", "pending_events.json
 QUEUE_FLUSH_INTERVAL = 30   # seconds
 HEARTBEAT_INTERVAL   = 60   # seconds
 MAX_DISPATCH_WORKERS = 4
+
+# Live-stream tuning
+STREAM_FPS_DEFAULT     = 6
+STREAM_JPEG_QUALITY    = 55
+STREAM_MAX_RECONNECT_S = 30
 
 C = {
     "safe":   (50, 200, 50),
@@ -385,9 +414,8 @@ class TelemetryClient:
 
     def _dispatch(self, path: str, payload: dict) -> None:
         if not self._post(path, payload):
-            # FIX: previously this was the end of the line — after 3 retries
-            # the event was just printed and dropped. Now it's persisted so
-            # the background flush loop can retry once connectivity returns.
+            # After 3 retries the event is persisted so the background flush
+            # loop can retry once connectivity returns, instead of dropping it.
             self._enqueue_pending(path, payload)
 
     def send_event(self, event_type: str, state: dict, room_number: str) -> None:
@@ -400,8 +428,8 @@ class TelemetryClient:
             "head_strike_risk" : state.get("head_strike_risk") or None,
             "image_url"        : None,
         }
-        # FIX: bounded pool instead of an unbounded thread-per-event spawn —
-        # a flaky link used to be able to accumulate dozens of blocked
+        # Bounded pool instead of an unbounded thread-per-event spawn — a
+        # flaky link used to be able to accumulate dozens of blocked
         # threads, each holding a socket, on a resource-constrained Jetson.
         self.executor.submit(self._dispatch, "/api/v1/telemetry/events", payload)
 
@@ -455,6 +483,115 @@ class TelemetryClient:
     def shutdown(self) -> None:
         self._stop.set()
         self.executor.shutdown(wait=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live camera stream — separate WS connection, latest-frame-only, own thread
+# ─────────────────────────────────────────────────────────────────────────────
+
+def http_to_ws(url: str) -> str:
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://"):]
+    return url
+
+
+class LiveStreamer:
+    """
+    Pushes the latest processed frame to /api/v1/ws/edge/stream at a
+    throttled rate on its own thread. Deliberately holds only the single
+    most recent frame (overwritten on every `submit_frame`) rather than a
+    queue: if the uplink is briefly slow, the right behavior for a live
+    preview is to skip stale frames, not to fall further and further behind.
+    Reconnects with exponential backoff (capped) if the socket drops.
+    """
+
+    def __init__(self, api_url: str, api_key: str, room: str,
+                 fps: float = STREAM_FPS_DEFAULT, quality: int = STREAM_JPEG_QUALITY):
+        self.ws_url   = http_to_ws(api_url.rstrip("/")) + f"/api/v1/ws/edge/stream?room={room}"
+        self.api_key  = api_key
+        self.room     = room
+        self.interval = 1.0 / max(fps, 0.1)
+        self.quality  = quality
+
+        self._latest_frame = None
+        self._frame_lock    = threading.Lock()
+        self._stop          = threading.Event()
+        self._thread         = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        if websocket is None:
+            print("[STREAM] websocket-client not installed — live camera feed disabled "
+                  "(pip install websocket-client). Detection/telemetry are unaffected.")
+            return
+        self._thread.start()
+
+    def submit_frame(self, frame: np.ndarray) -> None:
+        if websocket is None or self._stop.is_set():
+            return
+        with self._frame_lock:
+            self._latest_frame = frame  # caller doesn't touch it again after this
+
+    def _run(self) -> None:
+        attempt = 0
+        while not self._stop.is_set():
+            ws = None
+            try:
+                ws = websocket.create_connection(
+                    self.ws_url,
+                    header=[f"X-API-KEY: {self.api_key}"],
+                    timeout=10,
+                )
+                print(f"[STREAM] Live camera connected -> {self.ws_url}")
+                attempt = 0
+                last_sent = 0.0
+
+                while not self._stop.is_set():
+                    now = time.time()
+                    if now - last_sent < self.interval:
+                        time.sleep(0.01)
+                        continue
+
+                    with self._frame_lock:
+                        frame = self._latest_frame
+                        self._latest_frame = None  # don't resend an unchanged frame
+                    if frame is None:
+                        time.sleep(0.02)
+                        continue
+
+                    ok, buf = cv2.imencode(
+                        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality]
+                    )
+                    if not ok:
+                        continue
+
+                    payload = json.dumps({
+                        "room"     : self.room,
+                        "jpeg_b64" : base64.b64encode(buf).decode("ascii"),
+                    })
+                    ws.send(payload)
+                    last_sent = now
+            except Exception as exc:
+                print(f"[STREAM][WARN] disconnected: {exc}")
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+            if self._stop.is_set():
+                break
+            attempt += 1
+            base  = min(STREAM_MAX_RECONNECT_S, 1 * 2 ** (attempt - 1))
+            delay = base / 2 + random.random() * (base / 2)
+            time.sleep(delay)
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -522,6 +659,13 @@ def main():
                         help="Save output video to this path")
     parser.add_argument("--no-display", action="store_true",
                         help="Run headless — no window (for SSH)")
+    parser.add_argument("--no-stream",  action="store_true",
+                        help="Disable the live camera feed pushed to the dashboard "
+                             "(fall/bed-exit events and heartbeat are unaffected)")
+    parser.add_argument("--stream-fps", type=float, default=STREAM_FPS_DEFAULT,
+                        help="Live feed frame rate sent to the dashboard (default: %(default)s)")
+    parser.add_argument("--stream-quality", type=int, default=STREAM_JPEG_QUALITY,
+                        help="JPEG quality (1-100) for the live feed (default: %(default)s)")
     args = parser.parse_args()
 
     if not args.api_key:
@@ -550,6 +694,14 @@ def main():
     # Flush anything left over from a previous run before we start streaming.
     telemetry._flush_pending()
 
+    streamer = None
+    if not args.no_stream:
+        streamer = LiveStreamer(
+            args.api_url, args.api_key, args.room,
+            fps=args.stream_fps, quality=args.stream_quality,
+        )
+        streamer.start()
+
     last_heartbeat = 0.0
     trackers: dict[int, PersonTracker] = {}
     fps_buf  = deque(maxlen=30)
@@ -557,6 +709,8 @@ def main():
 
     print(f"[INFO] SafeWatch running — Room: {args.room}")
     print(f"[INFO] Sending events to: {args.api_url}")
+    if streamer:
+        print(f"[INFO] Live camera feed enabled — {args.stream_fps} fps, quality {args.stream_quality}")
     print("[INFO] Press Q to quit" if not args.no_display else "[INFO] Headless mode — Ctrl-C to stop")
 
     try:
@@ -617,6 +771,11 @@ def main():
             fps_avg = float(np.mean(fps_buf)) if fps_buf else 0.0
             draw_hud(frame, frame_states, fps_avg, args.room)
 
+            # Hand the fully-annotated frame to the live streamer. This is a
+            # non-blocking pointer swap — no I/O happens on this thread.
+            if streamer:
+                streamer.submit_frame(frame.copy())
+
             if writer:
                 writer.write(frame)
 
@@ -630,6 +789,8 @@ def main():
             writer.release()
         cv2.destroyAllWindows()
         telemetry.shutdown()
+        if streamer:
+            streamer.shutdown()
         print("[INFO] SafeWatch stopped.")
 
 

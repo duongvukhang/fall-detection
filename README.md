@@ -1,6 +1,6 @@
-# SafeWatch Fall Detection
+# The AI Guards Fall Detection
 
-SafeWatch is an edge-to-cloud fall and bed-exit detection system.
+The AI Guards is an edge-to-cloud fall and bed-exit detection system.
 
 - `backend/` - FastAPI API, auth, telemetry ingest, dashboard endpoints, Alembic migrations
 - `safewatch-ui/` - React/Vite dashboard deployed on Vercel
@@ -152,9 +152,9 @@ sudo apt install -y python3-pip python3-venv git libopenblas-base libopenmpi-dev
 Create an app user and folders:
 
 ```bash
-sudo useradd --create-home --shell /bin/bash safewatch || true
-sudo mkdir -p /opt/safewatch /var/lib/safewatch-edge
-sudo chown -R safewatch:safewatch /opt/safewatch /var/lib/safewatch-edge
+sudo useradd --create-home --shell /bin/bash ai-guards || true
+sudo mkdir -p /opt/the-ai-guards /var/lib/the-ai-guards-edge
+sudo chown -R ai-guards:ai-guards /opt/the-ai-guards /var/lib/the-ai-guards-edge
 ```
 
 ### 2. Copy Edge Files
@@ -162,16 +162,16 @@ sudo chown -R safewatch:safewatch /opt/safewatch /var/lib/safewatch-edge
 Copy the contents of this repo's `edge/` folder to the Jetson:
 
 ```text
-/opt/safewatch
+/opt/the-ai-guards
 ```
 
 The Jetson folder should contain:
 
 ```text
-/opt/safewatch/edge_detector.py
-/opt/safewatch/requirements.txt
-/opt/safewatch/yolov8n-pose.pt
-/opt/safewatch/safewatch-edge.service
+/opt/the-ai-guards/edge_detector.py
+/opt/the-ai-guards/requirements.txt
+/opt/the-ai-guards/yolov8n-pose.pt
+/opt/the-ai-guards/the-ai-guards-edge.service
 ```
 
 ### 3. Install Python Dependencies
@@ -179,7 +179,7 @@ The Jetson folder should contain:
 On the Jetson:
 
 ```bash
-cd /opt/safewatch
+cd /opt/the-ai-guards
 python3 -m venv venv
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
@@ -192,7 +192,7 @@ Note: Jetson devices often need NVIDIA/JetPack-compatible PyTorch and OpenCV pac
 Create:
 
 ```bash
-sudo nano /etc/safewatch-edge.env
+sudo nano /etc/the-ai-guards-edge.env
 ```
 
 Example:
@@ -201,14 +201,14 @@ Example:
 CLOUD_API_URL=https://your-render-service.onrender.com
 EDGE_API_KEY=your_api_token_from_registration
 ROOM_NUMBER=ROOM-01
-YOLO_MODEL=/opt/safewatch/yolov8n-pose.pt
-PENDING_QUEUE_PATH=/var/lib/safewatch-edge/pending_events.jsonl
+YOLO_MODEL=/opt/the-ai-guards/yolov8n-pose.pt
+PENDING_QUEUE_PATH=/var/lib/the-ai-guards-edge/pending_events.jsonl
 ```
 
 Lock down the file because it contains the API token:
 
 ```bash
-sudo chmod 600 /etc/safewatch-edge.env
+sudo chmod 600 /etc/the-ai-guards-edge.env
 ```
 
 ### 5. Test Camera
@@ -216,37 +216,37 @@ sudo chmod 600 /etc/safewatch-edge.env
 For a USB camera:
 
 ```bash
-cd /opt/safewatch
+cd /opt/the-ai-guards
 ./venv/bin/python edge_detector.py \
   --source 0 \
   --room ROOM-01 \
   --api-url https://your-render-service.onrender.com \
   --api-key your_api_token_from_registration \
-  --model /opt/safewatch/yolov8n-pose.pt
+  --model /opt/the-ai-guards/yolov8n-pose.pt
 ```
 
 For the Jetson CSI camera:
 
 ```bash
-cd /opt/safewatch
+cd /opt/the-ai-guards
 ./venv/bin/python edge_detector.py \
   --source csi \
   --room ROOM-01 \
   --api-url https://your-render-service.onrender.com \
   --api-key your_api_token_from_registration \
-  --model /opt/safewatch/yolov8n-pose.pt
+  --model /opt/the-ai-guards/yolov8n-pose.pt
 ```
 
 For headless SSH mode:
 
 ```bash
-cd /opt/safewatch
+cd /opt/the-ai-guards
 ./venv/bin/python edge_detector.py \
   --source csi \
   --room ROOM-01 \
   --api-url https://your-render-service.onrender.com \
   --api-key your_api_token_from_registration \
-  --model /opt/safewatch/yolov8n-pose.pt \
+  --model /opt/the-ai-guards/yolov8n-pose.pt \
   --no-display
 ```
 
@@ -260,7 +260,7 @@ Successful cloud transmission looks like:
 If the network is down, events are saved to:
 
 ```text
-/var/lib/safewatch-edge/pending_events.jsonl
+/var/lib/the-ai-guards-edge/pending_events.jsonl
 ```
 
 and retried automatically.
@@ -270,27 +270,27 @@ and retried automatically.
 Copy the service file:
 
 ```bash
-sudo cp /opt/safewatch/safewatch-edge.service /etc/systemd/system/
+sudo cp /opt/the-ai-guards/the-ai-guards-edge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now safewatch-edge
+sudo systemctl enable --now the-ai-guards-edge
 ```
 
 View logs:
 
 ```bash
-sudo journalctl -u safewatch-edge -f
+sudo journalctl -u the-ai-guards-edge -f
 ```
 
 Restart service:
 
 ```bash
-sudo systemctl restart safewatch-edge
+sudo systemctl restart the-ai-guards-edge
 ```
 
 Stop service:
 
 ```bash
-sudo systemctl stop safewatch-edge
+sudo systemctl stop the-ai-guards-edge
 ```
 
 ### 7. Confirm Dashboard Events
@@ -364,4 +364,4 @@ Check:
 - `backend/.env.example` - backend env template
 - `safewatch-ui/.env.example` - frontend env template
 - `edge/.env.example` - Jetson env template
-- `edge/safewatch-edge.service` - systemd service template
+- `edge/the-ai-guards-edge.service` - systemd service template

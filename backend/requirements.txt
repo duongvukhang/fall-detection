@@ -1,4 +1,4 @@
-# SafeWatch Backend — Python dependencies
+# The AI Guards Backend — Python dependencies
 # Install: pip install -r requirements.txt
 
 # Web framework

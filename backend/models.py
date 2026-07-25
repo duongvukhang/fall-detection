@@ -1,5 +1,5 @@
 """
-SafeWatch — Database Models (SQLAlchemy 2.x + async)
+The AI Guards — Database Models (SQLAlchemy 2.x + async)
 Two-table multi-tenant schema: users → stats (CASCADE)
 """
 

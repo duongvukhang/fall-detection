@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: safewatch-api
+    name: the-ai-guards-api
     env: docker
     rootDir: backend
     plan: starter

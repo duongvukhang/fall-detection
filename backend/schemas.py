@@ -1,5 +1,5 @@
 """
-SafeWatch — Pydantic v2 Schemas
+The AI Guards — Pydantic v2 Schemas
 Input validation, API response shapes, and telemetry payload contracts.
 """
 
